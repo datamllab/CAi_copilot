@@ -8,7 +8,7 @@ An agentic platform for molecular generation, evaluation, and candidate prioriti
 
 ## Overview
 
-CAi is an AI agent platform for drug discovery workflows. It combines a lightweight LangGraph-based execution engine with domain-specific tools for molecular generation, docking, toxicity prediction, and synthesizability assessment.
+This agent is an integrated platform for intelligent molecular design, scaffold-based generation, de novo drug discovery, and multi-dimensional evaluation. Designed for both drug discovery researchers and computational chemists, it enables you to deploy and run complex molecular design workflows with a single natural language command, removing the typical overhead of environment setup, model integration, and evaluation pipelines. Molecule Agent streamlines the workflow into an accessible, reproducible, and scientifically rigorous tool, saving both time and computational resources. 
 
 **Key design principles:**
 - Mixed interaction — the agent can answer questions directly, execute code, or do both in one response
@@ -40,7 +40,7 @@ See [docs/architecture.md](docs/architecture.md) for full details.
 
 ## Getting Started
 
-### 1. Configure environment
+### 1. Configure environmental variables
 
 Create `CAi/.env`. The agent auto-detects the provider from `LLM_MODEL`:
 
@@ -98,7 +98,7 @@ python -m CAi.toolkit.server.app
 # Listens on http://0.0.0.0:8001 — check http://localhost:8001/health
 ```
 
-### 5. Launch the agent
+### 5. Launch the agent UI
 
 ```bash
 python CAi/main.py
@@ -196,7 +196,7 @@ Agent receives result
 | Constrained Scaffold Generation   | RNN-based Constrained Scaffold Generation | `generate_scaffold_analogs`              | Takes a scaffold structure as input and generates structurally similar small molecules while preserving the core scaffold. The modified regions may include R-groups or linkers. It is suitable for lead expansion, scaffold optimization, and targeted analog exploration.                                       |
 | Constrained Scaffold Generation   | LibINVENT                                 | `generate_libinvent_decorations`         | Generates modifiable molecular libraries centered on a scaffold. It is especially suitable for systematic R-group expansion and controllable molecular design around a fixed core scaffold, and supports reaction-type constraints to improve synthetic feasibility.                                              |
 | Constrained Scaffold Generation   | Reinvent 4                                | `generate_molecules_reinvent4_libinvent` | Further enables the generation of reaction-constrained chemical libraries based on a scaffold under the guidance of multi-objective scoring functions.                                                                                                                                                            |
-| De Novo Molecular Design          | RXNFlow                                   | `run_rxnflow_design()`                   | Performs de novo small-molecule generation without relying on a fixed scaffold, based on a target protein, target-related information, or a specified chemical space. It is suitable for target-driven drug design and novel candidate discovery.                                                                 |
+| De Novo Molecular Design          | RXNFlow                                   | `generate_molecules_for_pocket`                   | Performs de novo small-molecule generation without relying on a fixed scaffold, based on a target protein, target-related information, or a specified chemical space. It is suitable for target-driven drug design and novel candidate discovery.                                                                 |
 | De Novo Molecular Design          | Reinvent 4                                | `generate_molecules_reinvent4_denovo`    | Performs multi-objective driven molecular generation under the guidance of multi-objective scoring functions.                                                                                                                                                                                                     |
 | De Novo Molecular Generation      | Reinvent 4                                | `generate_molecules_reinvent4_mol2mol`   | Takes a complete molecule as input and generates structurally similar candidate molecules conditioned on that molecule under multi-objective optimization, enabling local optimization.                                                                                                                           |
 | Retrosynthesis Evaluation         | SC Score                                  | `calculate_scscore`                      | Evaluates the structural synthesizability of generated molecules by measuring their consistency with known synthesis patterns and their potential feasibility. It can be used for preliminary synthesizability screening of candidate molecules.                                                                  |
@@ -233,7 +233,7 @@ See [CAi/start.md](CAi/start.md) for the full development guide.
 
 ## Contribution
 
-CAi Molecule Design Copilot contributes a unified agentic workflow for molecular generation, evaluation, and candidate selection. By integrating scaffold-based design, de novo generation, synthesizability assessment, toxicity prediction, antibacterial activity prediction, and docking-based evaluation into one system, it reduces the overhead of fragmented molecular design pipelines and makes advanced workflows more accessible to drug discovery researchers.
+CAi Copilot contributes a unified agentic workflow for molecular generation, evaluation, and candidate selection. By integrating scaffold-based design, de novo generation, synthesizability assessment, toxicity prediction, antibacterial activity prediction, and docking-based evaluation into one system, it reduces the overhead of fragmented molecular design pipelines and makes advanced workflows more accessible to drug discovery researchers.
 
 The platform is currently applied to scaffold-based analog generation, target-aware de novo molecular design, and multi-objective candidate screening. Through its web-based interface and natural-language interaction, CAi enables researchers to perform molecular design experiments more efficiently, reproducibly, and with greater flexibility in tool selection and workflow composition.
 
