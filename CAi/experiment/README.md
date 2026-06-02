@@ -1,6 +1,6 @@
 # CAi Experiment Runner
 
-批量运行 Agent 在数据集上的评估实验。支持顺序执行和多进程并行，自动隔离 REPL kernel，结果按时间戳分目录存放。
+批量运行 Agent 在数据集上的评估实验。支持顺序执行和多进程并行，自动隔离 REPL kernel，结果按时间戳分目录存放，**增量 checkpoint 持久化**和**断点重跑**。
 
 ## 快速开始
 
@@ -13,6 +13,9 @@ python run_experiment_test.py --dataset my_dataset.json --name mol_weight_test
 
 # 3. 查看结果
 cat experiments/20260528_143022_mol_weight_test/summary.txt
+
+# 4. 中途 Ctrl+C 中断后，断点重跑
+python run_experiment_test.py --dataset my_dataset.json --name mol_weight_test --resume
 ```
 
 ## 数据格式
@@ -34,7 +37,6 @@ cat experiments/20260528_143022_mol_weight_test/summary.txt
   {
     "id": "task2",
     "prompt": "用 DrugEx 生成 5 个类药分子",
-    "category": "molecule_generation",
     "expected_output": "5 valid SMILES"
   }
 ]
@@ -106,6 +108,46 @@ python run_experiment_test.py \
 | `--timeout` | 单条任务超时（秒） | `300` |
 | `--prompt-field` | prompt 字段名 | `prompt` |
 | `--id-field` | id 字段名 | `id` |
+| `--resume [RUN_DIR]` | 断点重跑（见下方说明） | 禁用 |
+
+## 实时进度
+
+运行时会输出三级进度信息：
+
+```
+  [▶] [1/4] q1 (calculation) — starting  (elapsed 0s)
+    └─ response: 正在计算...
+    └─ code executed: 180.16
+  [✓] [1/4] q1 (calculation): success in 12.3s  (elapsed 12s)
+```
+
+- `[▶]` — 每条任务开始时的提示
+- `└─` — 顺序模式（`--workers 1`）下实时显示 LLM 响应片段和代码执行输出
+- `[✓]/[✗]/[⏱]` — 每条任务完成后的状态
+
+> 多进程模式下 step 级进度（`└─` 行）不可用，因为子进程隔离无法跨进程传递事件。
+
+## 增量持久化与断点重跑
+
+### Checkpoint 机制
+
+每完成一条任务，结果会立即追加写入 `checkpoint.jsonl`（JSONL 格式，每行一条完整记录）。即使运行中途崩溃或 Ctrl+C 中断，已完成的结果也不会丢失。
+
+### 断点重跑 `--resume`
+
+```bash
+# 方式 1：自动找到最近一次运行的目录并恢复
+python run_experiment_test.py --dataset my_bench.json --name bench --resume
+
+# 方式 2：指定具体的 run 目录
+python run_experiment_test.py --dataset my_bench.json --name bench --resume experiments/20260528_143022_bench
+```
+
+恢复流程：
+1. 读取 run 目录下的 `checkpoint.jsonl`，获取已完成的 item_id
+2. 过滤 dataset，只运行未完成的任务
+3. 新结果与 checkpoint 中的旧结果合并后写入最终输出
+4. 如果所有任务都已完成，直接重新生成输出文件并退出
 
 ## 输出目录结构
 
@@ -114,12 +156,14 @@ python run_experiment_test.py \
 ```
 experiments/
 ├── 20260528_143022_smoke_test/
-│   ├── config.json        # 实验参数快照（模型、数据集、worker数等）
-│   ├── results.json       # 完整报告（summary + 每条结果的详细内容）
-│   ├── results.csv        # 扁平表格（方便 Excel/pandas 分析）
-│   └── summary.txt        # 可读文本摘要
+│   ├── config.json          # 实验参数快照（模型、数据集、worker数等）
+│   ├── checkpoint.jsonl     # 增量 checkpoint（每条结果一行 JSON）
+│   ├── results.json         # 完整报告（summary + 每条结果的详细内容）
+│   ├── results.csv          # 扁平表格（方便 Excel/pandas 分析）
+│   └── summary.txt          # 可读文本摘要
 └── 20260529_090000_bench_v2/
     ├── config.json
+    ├── checkpoint.jsonl
     ├── results.json
     ├── results.csv
     └── summary.txt
@@ -175,7 +219,7 @@ meta_<任意 metadata 字段>...
 
 | 值 | 模式 | 说明 |
 |---|---|---|
-| `1` | 顺序 | 当前进程内逐个执行，适合调试 |
+| `1` | 顺序 | 当前进程内逐个执行，支持 step 级进度，适合调试 |
 | `>1` | 多进程 | `multiprocessing.Pool`（spawn 模式），每个子进程独立 REPL kernel |
 
 ```bash
@@ -214,10 +258,38 @@ report = run_experiment(
         "auto_load_utilities": False,
     },
     per_item_timeout_seconds=300,
+    checkpoint_path="experiments/run_001/checkpoint.jsonl",  # 增量持久化
+    on_item_start=lambda done, total, item: print(f"[START] {item.id}"),
+    on_step=lambda item_id, event: print(f"  [{item_id}] {event['type']}"),  # 仅顺序模式
     on_progress=lambda done, total, r: print(f"[{done}/{total}] {r.item_id}: {r.status}"),
 )
 
 print(f"{report.successes}/{report.total} success, avg {report.avg_wall_time:.1f}s")
+```
+
+### 回调说明
+
+| 回调 | 参数 | 触发时机 |
+|---|---|---|
+| `on_item_start` | `(completed, total, DatasetItem)` | 每条任务**开始前** |
+| `on_step` | `(item_id, event)` | LLM streaming 每个事件（仅顺序模式） |
+| `on_progress` | `(completed, total, ExperimentResult)` | 每条任务**完成后** |
+
+### Checkpoint API
+
+```python
+from CAi.experiment import CheckpointWriter, load_checkpoint, completed_item_ids, merge_results
+
+# 写入 checkpoint
+writer = CheckpointWriter("results/checkpoint.jsonl")
+writer.append(result)  # 立即追加一条结果
+
+# 读取 checkpoint（容错，跳过损坏行）
+results = load_checkpoint("results/checkpoint.jsonl")
+done_ids = completed_item_ids(results)
+
+# 合并新旧结果
+merged = merge_results(old_results, new_results)
 ```
 
 ### 自定义 Scorer
@@ -268,3 +340,5 @@ print(df.head())
 3. **内存**：每个 worker 独立启动 Jupyter kernel，`--workers 4` 大约需要额外 ~2GB 内存
 4. **超时**：`--timeout` 是单条任务的硬超时（通过 SIGALRM 实现），不是总超时
 5. **并发安全**：使用 `spawn` 上下文创建子进程，确保每个 worker 有独立的 REPL kernel 和 builtins，不会互相干扰
+6. **崩溃安全**：每条结果立即写入 `checkpoint.jsonl`，崩溃后最多丢失最后一条
+7. **断点重跑**：依赖 dataset item 的 `id` 字段做去重匹配，没有 id 的 item 每次都会重新运行

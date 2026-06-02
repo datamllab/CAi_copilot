@@ -6,6 +6,7 @@ Each run creates a timestamped directory under ``experiments/``:
     experiments/
     └── 20250528_143022_smoke_test/
         ├── config.json          # All parameters used
+        ├── checkpoint.jsonl     # Crash-safe incremental results (one JSON line per item)
         ├── results.json         # Full JSON report
         ├── results.csv          # Flat CSV table
         └── summary.txt          # Human-readable summary
@@ -20,8 +21,11 @@ Usage:
     # Parallel with 4 workers
     python run_experiment_test.py --workers 4
 
-    # Adjust agent behavior
-    python run_experiment_test.py --no-skills --timeout 120
+    # Resume from an interrupted run
+    python run_experiment_test.py --dataset my_bench.json --resume
+
+    # Resume from a specific run directory
+    python run_experiment_test.py --dataset my_bench.json --resume experiments/20250528_143022_smoke_test
 """
 
 from __future__ import annotations
@@ -34,7 +38,16 @@ from datetime import datetime
 from pathlib import Path
 
 from CAi.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_SOURCE
-from CAi.experiment import DatasetItem, ExperimentReport, load_dataset, run_experiment
+from CAi.experiment import (
+    DatasetItem,
+    ExperimentReport,
+    ExperimentResult,
+    completed_item_ids,
+    load_checkpoint,
+    load_dataset,
+    merge_results,
+    run_experiment,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +79,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--prompt-field", default="prompt", help="Field name for prompt text")
     p.add_argument("--id-field", default="id", help="Field name for item ID")
 
+    # Resume
+    p.add_argument("--resume", nargs="?", const=True, default=None,
+                   metavar="RUN_DIR",
+                   help="Resume from checkpoint. If a path is given, resume from that "
+                        "run directory. If given without a path (just --resume), auto-detect "
+                        "the most recent run directory under output-dir.")
+
     return p.parse_args()
 
 
@@ -76,6 +96,30 @@ def create_run_dir(base_dir: str | Path, name: str) -> Path:
     run_dir = Path(base_dir) / f"{ts}{suffix}"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
+
+
+def resolve_resume_dir(args: argparse.Namespace) -> Path:
+    """Determine the run directory to resume from."""
+    if isinstance(args.resume, str):
+        run_dir = Path(args.resume)
+        if not run_dir.exists():
+            print(f"[ERROR] Resume directory not found: {run_dir}", file=sys.stderr)
+            sys.exit(1)
+        return run_dir
+
+    # Auto-detect: find the most recent timestamped directory under output-dir
+    output_dir = Path(args.output_dir)
+    if not output_dir.exists():
+        print(f"[ERROR] Output directory does not exist: {output_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    subdirs = [d for d in output_dir.iterdir() if d.is_dir()
+               and d.name[:8].isdigit()]  # starts with YYYYMMDD
+    if not subdirs:
+        print(f"[ERROR] No run directories found in {output_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    return max(subdirs, key=lambda d: d.name)
 
 
 def save_config(run_dir: Path, args: argparse.Namespace, dataset_size: int,
@@ -144,6 +188,41 @@ def save_summary(run_dir: Path, report: ExperimentReport,
         f.write("\n".join(lines) + "\n")
 
 
+def rebuild_report(results: list[ExperimentResult], total: int) -> ExperimentReport:
+    """Build an ExperimentReport from an arbitrary list of results."""
+    successes = sum(1 for r in results if r.status == "success")
+    errors = sum(1 for r in results if r.status == "error")
+    timeouts = sum(1 for r in results if r.status == "timeout")
+    total_item_wall = sum(r.wall_time_seconds for r in results)
+    return ExperimentReport(
+        total=total,
+        successes=successes,
+        errors=errors,
+        timeouts=timeouts,
+        total_wall_time=total_item_wall,
+        avg_wall_time=total_item_wall / total if total else 0.0,
+        results=results,
+    )
+
+
+def write_final_outputs(
+    run_dir: Path,
+    results: list[ExperimentResult],
+    total: int,
+    total_wall: float,
+    args: argparse.Namespace,
+) -> None:
+    """Regenerate all output files from a list of results."""
+    from CAi.experiment.persistence import save_csv, save_json
+
+    report = rebuild_report(results, total)
+    report.output_path = str(run_dir / "results.json")
+    save_json(report, run_dir / "results.json")
+    save_csv(report, run_dir / "results.csv")
+    save_config(run_dir, args, total, total_wall)
+    save_summary(run_dir, report, total_wall, args)
+
+
 def main() -> None:
     args = parse_args()
 
@@ -157,12 +236,8 @@ def main() -> None:
         print(f"[ERROR] Dataset is empty: {args.dataset}", file=sys.stderr)
         sys.exit(1)
 
+    total_dataset_size = len(dataset)
     exp_name = args.name or Path(args.dataset).stem
-    run_dir = create_run_dir(args.output_dir, exp_name)
-    print(f"[INFO] Run directory: {run_dir}")
-    print(f"[INFO] Loaded {len(dataset)} tasks from {args.dataset}")
-    print(f"[INFO] LLM: model={args.model}, source={args.source}")
-    print(f"[INFO] Workers: {args.workers}, Timeout: {args.timeout}s/item\n")
 
     # Build agent args
     agent_args = {
@@ -175,32 +250,105 @@ def main() -> None:
         "auto_load_utilities": args.utilities,
     }
 
-    def on_progress(done: int, total: int, result) -> None:
-        cat = result.item_metadata.get("category", "?")
+    # ── Resume logic ──────────────────────────────────────────────
+    old_results: list[ExperimentResult] = []
+    run_dir: Path | None = None
+
+    if args.resume is not None:
+        run_dir = resolve_resume_dir(args)
+        checkpoint_file = run_dir / "checkpoint.jsonl"
+        if not checkpoint_file.exists():
+            print(f"[ERROR] No checkpoint found at {checkpoint_file}", file=sys.stderr)
+            sys.exit(1)
+
+        old_results = load_checkpoint(checkpoint_file)
+        completed_ids = completed_item_ids(old_results)
+        remaining = [item for item in dataset
+                      if item.id is None or item.id not in completed_ids]
+
+        print(f"[RESUME] Loaded {len(old_results)} completed results from {checkpoint_file}")
+        print(f"[RESUME] {len(remaining)}/{total_dataset_size} items remaining")
+
+        if not remaining:
+            print("[RESUME] All items already completed. Regenerating outputs.")
+            write_final_outputs(run_dir, old_results, total_dataset_size, 0.0, args)
+            print(f"\nSaved to: {run_dir}/")
+            return
+
+        dataset_to_run = remaining
+    else:
+        run_dir = create_run_dir(args.output_dir, exp_name)
+        dataset_to_run = dataset
+
+    print(f"[INFO] Run directory: {run_dir}")
+    print(f"[INFO] Running {len(dataset_to_run)} tasks (total dataset: {total_dataset_size})")
+    print(f"[INFO] LLM: model={args.model}, source={args.source}")
+    print(f"[INFO] Workers: {args.workers}, Timeout: {args.timeout}s/item\n")
+
+    # ── Callbacks ──────────────────────────────────────────────────
+    checkpoint_file = run_dir / "checkpoint.jsonl"
+    run_start = time.monotonic()
+
+    def on_item_start(done: int, total: int, item: DatasetItem) -> None:
+        elapsed = time.monotonic() - run_start
+        cat = item.metadata.get("category", "?")
+        print(f"  [▶] [{done+1}/{total}] {item.id} ({cat}) — starting  (elapsed {elapsed:.0f}s)")
+
+    def on_progress(done: int, total: int, result: ExperimentResult) -> None:
+        elapsed = time.monotonic() - run_start
         icon = {"success": "✓", "error": "✗", "timeout": "⏱"}.get(result.status, "?")
+        cat = result.item_metadata.get("category", "?")
         print(
-            f"[{done}/{total}] {icon} {result.item_id} ({cat}): "
-            f"{result.status} in {result.wall_time_seconds:.1f}s"
+            f"  [{icon}] [{done}/{total}] {result.item_id} ({cat}): "
+            f"{result.status} in {result.wall_time_seconds:.1f}s  (elapsed {elapsed:.0f}s)"
         )
         if result.error_message:
-            print(f"  Error: {result.error_message[:200]}")
+            print(f"       Error: {result.error_message[:200]}")
 
-    t0 = time.time()
+    def on_step(item_id: str, event: dict) -> None:
+        etype = event.get("type", "")
+        content = event.get("content", "")
+        if etype == "observation":
+            preview = content[:200].replace("\n", " ")
+            print(f"    └─ code executed: {preview}")
+        elif etype == "message_end":
+            preview = content[:150].replace("\n", " ")
+            print(f"    └─ response: {preview}")
+
+    # ── Run experiment ─────────────────────────────────────────────
     report = run_experiment(
-        dataset,
+        dataset_to_run,
         agent_args=agent_args,
         max_workers=args.workers,
         per_item_timeout_seconds=args.timeout,
         on_progress=on_progress,
+        on_item_start=on_item_start,
+        on_step=on_step if args.workers <= 1 else None,
+        checkpoint_path=checkpoint_file,
     )
-    total_wall = time.time() - t0
 
-    # Save outputs to run directory
+    total_wall = time.monotonic() - run_start
+
+    # ── Merge with old results if resuming ─────────────────────────
+    if old_results:
+        all_results = merge_results(old_results, report.results)
+        report = rebuild_report(all_results, total_dataset_size)
+        report.output_path = str(run_dir / "results.json")
+        # Rewrite full checkpoint so it's consistent with merged results
+        # Overwrite (not append) the checkpoint with merged results
+        with open(checkpoint_file, "w", encoding="utf-8") as f:
+            import json as _json
+            for r in all_results:
+                f.write(_json.dumps(r.to_dict(), ensure_ascii=False) + "\n")
+    else:
+        report.output_path = str(run_dir / "results.json")
+
+    # ── Write final outputs ────────────────────────────────────────
     from CAi.experiment.persistence import save_csv, save_json
 
     save_json(report, run_dir / "results.json")
     save_csv(report, run_dir / "results.csv")
-    save_config(run_dir, args, len(dataset), total_wall)
+    save_config(run_dir, args, total_dataset_size, total_wall)
     save_summary(run_dir, report, total_wall, args)
 
     # Print summary
@@ -211,10 +359,11 @@ def main() -> None:
     print(f"  Avg time: {report.avg_wall_time:.1f}s/item")
     print(f"  Total:    {total_wall:.1f}s")
     print(f"\nSaved to: {run_dir}/")
-    print(f"  ├── config.json")
-    print(f"  ├── results.json")
-    print(f"  ├── results.csv")
-    print(f"  └── summary.txt")
+    print("  ├── config.json")
+    print("  ├── checkpoint.jsonl")
+    print("  ├── results.json")
+    print("  ├── results.csv")
+    print("  └── summary.txt")
 
 
 if __name__ == "__main__":

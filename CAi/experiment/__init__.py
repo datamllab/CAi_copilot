@@ -16,14 +16,24 @@ Public API:
     print(f"{report.successes}/{report.total} success, avg {report.avg_wall_time:.1f}s")
 """
 
+from .checkpoint import (
+    CheckpointWriter,
+    completed_item_ids,
+    load_checkpoint,
+    merge_results,
+)
 from .datasets import load_dataset
 from .models import DatasetItem, ExperimentReport, ExperimentResult
 from .runner import run_experiment
 
 __all__ = [
+    "CheckpointWriter",
     "DatasetItem",
     "ExperimentReport",
     "ExperimentResult",
+    "completed_item_ids",
+    "load_checkpoint",
     "load_dataset",
+    "merge_results",
     "run_experiment",
 ]

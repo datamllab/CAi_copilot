@@ -12,6 +12,7 @@ from __future__ import annotations
 import signal
 import time
 import traceback
+from collections.abc import Callable
 from typing import Any
 
 
@@ -19,6 +20,7 @@ def run_single_experiment(
     item_dict: dict,
     agent_args: dict,
     timeout_seconds: int,
+    step_callback: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run one dataset item through an isolated A1pro agent.
 
@@ -32,6 +34,9 @@ def run_single_experiment(
                    expected_output — describing one dataset item.
         agent_args: Dict of kwargs forwarded to ``A1pro()`` constructor.
         timeout_seconds: Hard per-item timeout (SIGALRM).
+        step_callback: Optional callback invoked for each streaming event
+                       yielded by the agent. Only used in sequential mode;
+                       pass ``None`` in multiprocessing mode.
 
     Returns:
         Plain dict matching ``ExperimentResult`` fields.
@@ -74,6 +79,9 @@ def run_single_experiment(
         for event in agent.run_with_history_streaming(prompt, history):
             etype = event.get("type")
             content = event.get("content", "")
+
+            if step_callback:
+                step_callback(event)
 
             if etype == "message_end":
                 last_message = content

@@ -15,15 +15,14 @@ Usage:
 from __future__ import annotations
 
 import multiprocessing as mp
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .checkpoint import CheckpointWriter
 from .models import DatasetItem, ExperimentReport, ExperimentResult
 from .persistence import save_csv, save_json
 from .worker import run_single_experiment
-
 
 # Default agent constructor args when none are provided
 _DEFAULT_AGENT_ARGS = {
@@ -43,6 +42,9 @@ def run_experiment(
     output_format: str = "json",
     on_progress: Callable[[int, int, ExperimentResult], None] | None = None,
     scorer: Callable[[ExperimentResult], float | None] | None = None,
+    checkpoint_path: str | Path | None = None,
+    on_item_start: Callable[[int, int, DatasetItem], None] | None = None,
+    on_step: Callable[[str, dict], None] | None = None,
 ) -> ExperimentReport:
     """Run an experiment over a dataset of prompts.
 
@@ -58,6 +60,13 @@ def run_experiment(
         on_progress: Called as ``(completed, total, result)`` after each item.
         scorer: Optional function ``(result) -> float | None`` to compute a
                 match score for each result.
+        checkpoint_path: If provided, each completed result is appended to
+                         this JSONL file immediately for crash-safe persistence.
+        on_item_start: Called as ``(completed, total, item)`` before each item
+                       begins execution.
+        on_step: Called as ``(item_id, event)`` for each streaming event from
+                 the agent. **Only available in sequential mode** (``max_workers=1``);
+                 silently ignored in multiprocessing mode.
 
     Returns:
         ExperimentReport with summary statistics and per-item results.
@@ -70,17 +79,33 @@ def run_experiment(
     results: list[ExperimentResult] = []
     completed = 0
 
-    start_all = time.monotonic()
+    checkpoint_writer: CheckpointWriter | None = None
+    if checkpoint_path:
+        checkpoint_writer = CheckpointWriter(checkpoint_path)
 
     if max_workers <= 1:
         # Sequential mode — run in the current process
         for item in dataset:
+            if on_item_start:
+                on_item_start(completed, total, item)
+
             item_d = _item_to_dict(item)
-            raw = run_single_experiment(item_d, agent_kwargs, per_item_timeout_seconds)
+            step_cb = (
+                (lambda event, _id=item.id: on_step(_id, event))
+                if on_step
+                else None
+            )
+            raw = run_single_experiment(
+                item_d, agent_kwargs, per_item_timeout_seconds, step_cb
+            )
             result = _dict_to_result(raw)
             if scorer:
                 result.match_score = scorer(result)
             results.append(result)
+
+            if checkpoint_writer:
+                checkpoint_writer.append(result)
+
             completed += 1
             if on_progress:
                 on_progress(completed, total, result)
@@ -91,6 +116,8 @@ def run_experiment(
         async_results: list[mp.pool.AsyncResult] = []
 
         for item in dataset:
+            if on_item_start:
+                on_item_start(completed, total, item)
             item_d = _item_to_dict(item)
             ar = pool.apply_async(
                 run_single_experiment,
@@ -123,13 +150,15 @@ def run_experiment(
             if scorer:
                 result.match_score = scorer(result)
             results.append(result)
+
+            if checkpoint_writer:
+                checkpoint_writer.append(result)
+
             completed += 1
             if on_progress:
                 on_progress(completed, total, result)
 
         pool.join()
-
-    total_wall = time.monotonic() - start_all
 
     # Sort results by item_id (None sorts last)
     results.sort(key=lambda r: r.item_id or "\xff\xff")
