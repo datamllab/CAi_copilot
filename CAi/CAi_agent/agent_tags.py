@@ -56,7 +56,7 @@ _HAS_EXECUTE_RE = re.compile(r"<execute(?:\s+[^>]*)?>.*?</execute>", re.DOTALL)
 # ---------------------------------------------------------------------------
 
 # Canonical language ids. Anything else falls back to ``"python"``.
-SUPPORTED_LANGS = frozenset({"python", "bash", "r"})
+SUPPORTED_LANGS = frozenset({"python", "bash", "r", "plan"})
 
 # Legacy shebang prefixes -> canonical language id. Matched
 # case-insensitively against the first non-empty line of a code block.

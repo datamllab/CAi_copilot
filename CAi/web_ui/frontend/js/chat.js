@@ -282,7 +282,12 @@ export function renderStreamingMessage(msgEl, fullContent, isStreaming = false) 
         const statusOK = " ✓";
         const statusRun = " ⏳";
 
-        if (seg.type === "text") {
+        if (seg.type === "plan") {
+            // Plan blocks are rendered as a distinct, always-visible section
+            // with markdown rendering for the checklist items.
+            const planHtml = buildPlanBlock(seg.content, inProgress);
+            html += planHtml;
+        } else if (seg.type === "text") {
             if (seg.content.trim()) {
                 html += `<div class="solution-content">${renderMarkdown(seg.content)}</div>`;
             }
@@ -408,7 +413,7 @@ function _parseAttrs(attrStr) {
 function _detectLang(code, attrLang) {
     if (attrLang) {
         const normalized = attrLang.trim().toLowerCase();
-        if (["python", "bash", "r"].includes(normalized)) return normalized;
+        if (["python", "bash", "r", "plan"].includes(normalized)) return normalized;
         return "python";
     }
     const stripped = code.replace(/^[\s\n]+/, "");
@@ -448,7 +453,7 @@ export function parseSegments(content) {
             if (tagName === "execute") {
                 const lang = _detectLang(rawBody, attrs.lang);
                 segs.push({
-                    type: "code",
+                    type: lang === "plan" ? "plan" : "code",
                     lang,
                     content: _stripLegacyShebang(rawBody, lang),
                     attrs,
@@ -464,7 +469,7 @@ export function parseSegments(content) {
         if (tagName === "execute") {
             const lang = _detectLang(rawBody, attrs.lang);
             segs.push({
-                type: "code",
+                type: lang === "plan" ? "plan" : "code",
                 lang,
                 content: _stripLegacyShebang(rawBody, lang),
                 attrs,
@@ -519,6 +524,26 @@ function highlightCode(code, lang) {
         }
     } catch (_) { /* fall through */ }
     return escapeHtml(code);
+}
+
+function buildPlanBlock(content, inProgress = false) {
+    const status = inProgress ? " ⏳ 规划中..." : " ✓";
+    // Render markdown-like checklist items: [✓], [✗], [x], [ ], [-]
+    const rendered = escapeHtml(content)
+        .replace(/\[✓\]/g, '<span class="plan-check plan-done">✓</span>')
+        .replace(/\[✗\]/g, '<span class="plan-check plan-fail">✗</span>')
+        .replace(/\[x\]/gi, '<span class="plan-check plan-done">✓</span>')
+        .replace(/\[\s*\]/g, '<span class="plan-check plan-pending">○</span>')
+        .replace(/\[-\]/g, '<span class="plan-check plan-skip">—</span>')
+        .replace(/\n/g, "<br>");
+    return `
+        <div class="plan-block${inProgress ? " plan-in-progress" : ""}">
+            <div class="plan-header">
+                <span>📋 任务计划${status}</span>
+            </div>
+            <div class="plan-body">${rendered}</div>
+        </div>
+    `;
 }
 
 function buildCollapsible(title, content, _type, defaultOpen = false, isRaw = false) {

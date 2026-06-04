@@ -57,8 +57,8 @@ EXECUTION RULES:
 - CONTEXT ECONOMY (BASH): Never `cat` large files (PDBs, logs). Use `head`, `tail`, or `grep` to inspect. Redirect long tool outputs to `.log` files and review them selectively. 
 
 PLANNING (for multi-step tasks):
-- Start with a numbered plan. Mark steps [✓] or [✗] as you go.
-- Update the plan after each observation to reflect progress and next steps.
+- Start with a numbered plan inside an <execute lang="plan">...</execute> block.
+- Update the plan after each step.
 - Leverage the environment: Use Bash for heavy CLI tools/simulations, and Python (`pandas`, `matplotlib`, RDKit) to parse and visualize those Bash outputs.
 
 COMPLETION:

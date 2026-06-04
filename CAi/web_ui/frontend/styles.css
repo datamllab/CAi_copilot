@@ -2142,3 +2142,65 @@ body {
 .sidebar-section.collapsed .file-actions {
     display: none;
 }
+
+/* ========== Plan Block ========== */
+.plan-block {
+    margin: 8px 0;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent-soft);
+    overflow: hidden;
+}
+
+.plan-block.plan-in-progress {
+    border-color: var(--warning);
+}
+
+.plan-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: rgba(139, 92, 246, 0.08);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    user-select: none;
+}
+
+.plan-block.plan-in-progress .plan-header {
+    background: rgba(245, 158, 11, 0.08);
+    color: var(--warning);
+}
+
+.plan-body {
+    padding: 10px 12px;
+    font-size: 0.82rem;
+    font-family: var(--font-mono);
+    line-height: 1.7;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+}
+
+.plan-check {
+    display: inline-block;
+    width: 1.2em;
+    text-align: center;
+    font-weight: 700;
+}
+
+.plan-check.plan-done {
+    color: var(--success);
+}
+
+.plan-check.plan-fail {
+    color: var(--danger);
+}
+
+.plan-check.plan-pending {
+    color: var(--text-muted);
+}
+
+.plan-check.plan-skip {
+    color: var(--text-muted);
+}

@@ -65,6 +65,7 @@ class BaseAgent:
         base_url: str | None = None,
         api_key: str | None = None,
         temperature: float | None = None,
+        request_timeout: float | None = None,
         timeout_seconds: int = 600,
         system_prompt: str | None = None,
         max_history_pairs: int = _DEFAULT_MAX_HISTORY_PAIRS,
@@ -87,6 +88,7 @@ class BaseAgent:
             source=source,
             base_url=base_url,
             api_key=api_key,
+            request_timeout=request_timeout,
         )
 
         # Serialise code execution — the REPL shares builtins across calls.
@@ -172,7 +174,11 @@ RULES:
         with self._exec_lock:
             python_injected = False
             for block in blocks:
-                if block.lang == "bash":
+                if block.lang == "plan":
+                    # Plan blocks are not executed — they're preserved in
+                    # conversation history for reference across context compression.
+                    results.append("[Plan recorded]")
+                elif block.lang == "bash":
                     result = run_with_timeout(
                         run_bash_script, [block.code], timeout=self.timeout_seconds
                     )

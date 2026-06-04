@@ -48,7 +48,7 @@ def _build_agent_without_llm():
 
         agent = A1pro(
             llm="stub-model",
-            local_tools_dir=str(ROOT / "agent_workspace/_local_tools"),
+            #local_tools_dir=str(ROOT / "agent_workspace/_local_tools"),
         )
         return agent
     finally:
@@ -86,7 +86,7 @@ def _print_stats(agent) -> None:
     print(f"Tools loaded:       {len(agent.tool_registry)}")
     print(f"Skills loaded:      {len(agent.list_skills())}")
     print(f"Utilities loaded:   {len(agent.utility_registry) if agent.utility_registry else 0}")
-    print(f"Local tools loaded: {len(agent.local_tools_loader) if agent.local_tools_loader else 0}")
+    print(f"Local tools loaded: {len(agent.local_tools_loader) if getattr(agent, 'local_tools_loader', None) else 0}")
 
 
 def _print_section(agent, section_filter: str) -> None:
