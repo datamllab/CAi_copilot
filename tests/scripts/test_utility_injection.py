@@ -1,6 +1,9 @@
 """Test utility loading and injection into Jupyter kernel, including restart survival.
 
 Usage: python tests/scripts/test_utility_injection.py
+
+This script tests the default (module-level) KernelSession to verify
+that utilities can be injected, called, and survive kernel restarts.
 """
 
 import sys
@@ -14,22 +17,19 @@ sys.path.insert(0, str(repo_root))
 from CAi.CAi_agent.utilities.registry import UtilityRegistry
 from CAi.CAi_agent.execution import repl as repl_mod
 
-# Access module-level globals via repl_mod.<name> so we see mutations
-# (from X import Y bindings for immutable values / reassigned lists are stale).
+# Access the default session's internals.
+_default = repl_mod._default_session
 inject_utilities_with_monitoring = repl_mod.inject_utilities_with_monitoring
-_get_or_start_kernel = repl_mod._get_or_start_kernel
-_execute_in_kernel = repl_mod._execute_in_kernel
-_restart_kernel = repl_mod._restart_kernel
 reset_namespace = repl_mod.reset_namespace
 flush_utility_usage = repl_mod.flush_utility_usage
 
 
 def _get_state():
-    """Read current module-level state (avoids from-import staleness)."""
+    """Read current session state (avoids from-import staleness)."""
     return (
-        repl_mod._utilities_injected,
-        repl_mod._injected_utility_names,
-        repl_mod._injected_utilities,
+        _default._utilities_injected,
+        _default._injected_utility_names,
+        _default._injected_utilities,
     )
 
 UTILITIES_DIR = repo_root / "agent_workspace" / "_utilities"
@@ -69,11 +69,11 @@ print("\n" + "=" * 60)
 print("3. Verify utilities are callable in kernel")
 print("=" * 60)
 
-kc = _get_or_start_kernel()
+kc = _default._get_or_start_kernel()
 
 for name in names:
     code = f"print('{name} in dir():', '{name}' in dir())"
-    out, err = _execute_in_kernel(kc, code, timeout=10)
+    out, err = _default._execute_in_kernel(kc, code, timeout=10)
     print(f"  {name}: {out.strip()}")
     assert f"True" in out, f"{name} not found in kernel namespace!"
 print("  OK: All utilities visible in kernel")
@@ -94,7 +94,7 @@ if 'filter_compounds_by_similarity' in dir():
 else:
     print("filter_compounds_by_similarity not available")
 """
-out, err = _execute_in_kernel(kc, test_code, timeout=10)
+out, err = _default._execute_in_kernel(kc, test_code, timeout=10)
 print(f"  Output:\n{out}")
 if err:
     print(f"  Error: {err}")
@@ -112,7 +112,7 @@ collect_code = (
     "print('__UTIL_USAGE__:' + _json.dumps(dict(_utility_usage))); "
     "_utility_usage.clear()"
 )
-usage_out, _ = _execute_in_kernel(kc, collect_code, timeout=5)
+usage_out, _ = _default._execute_in_kernel(kc, collect_code, timeout=5)
 print(f"  Raw usage: {usage_out.strip()}")
 print("  OK: Usage tracking active")
 
@@ -121,14 +121,14 @@ print("6. Test kernel restart survival")
 print("=" * 60)
 
 print("  Restarting kernel...")
-_restart_kernel()
+_default._restart_kernel()
 time.sleep(2)  # Let kernel settle
 
-kc = _get_or_start_kernel()
+kc = _default._get_or_start_kernel()
 _, names_after_restart, _ = _get_state()
 for name in names_after_restart[:3]:  # Check first 3
     code = f"print('{name} in dir():', '{name}' in dir())"
-    out, err = _execute_in_kernel(kc, code, timeout=10)
+    out, err = _default._execute_in_kernel(kc, code, timeout=10)
     print(f"  After restart - {name}: {out.strip()}")
     assert f"True" in out, f"{name} LOST after kernel restart!"
 
@@ -145,7 +145,7 @@ try:
 except Exception as e:
     print(f"import FAILED: {e}")
 """
-out, err = _execute_in_kernel(kc, toolkit_test, timeout=10)
+out, err = _default._execute_in_kernel(kc, toolkit_test, timeout=10)
 print(f"  {out.strip()}")
 if err:
     print(f"  Error: {err}")

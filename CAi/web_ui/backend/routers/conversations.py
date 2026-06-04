@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..conversation_store import ConversationStore
-from ..deps import get_store
+from ..deps import SessionManager, get_session_manager, get_store
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -47,9 +47,12 @@ async def get_conversation(
 async def delete_conversation(
     conv_id: str,
     store: ConversationStore = Depends(get_store),
+    session_mgr: SessionManager = Depends(get_session_manager),
 ):
     if not store.delete_conversation(conv_id):
         raise HTTPException(status_code=404, detail="Conversation not found")
+    # Shut down the session's kernel to free resources.
+    session_mgr.evict(conv_id)
     return {"deleted": conv_id}
 
 

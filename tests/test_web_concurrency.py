@@ -68,20 +68,21 @@ def test_extract_parts_multiple_execute_blocks():
 
 
 def test_chat_lock_is_asyncio_lock():
-    """Verify the chat lock is properly configured as an asyncio.Lock.
+    """Verify per-session chat locks are properly configured.
 
-    We can't easily test true concurrent serialisation in pytest-asyncio
-    (the run_in_executor + asyncio.Lock interaction is tricky in test
-    environments), but we verify the lock exists and is the right type.
-    The real serialisation is validated by the fact that the agent's
-    _exec_lock (threading.Lock) prevents REPL interleaving, and the
-    asyncio.Lock prevents multiple SSE streams from overlapping.
+    Each ``AgentSession`` has its own ``asyncio.Lock`` so multiple
+    conversations can stream independently. The real serialisation
+    is validated by the fact that the agent's ``_exec_lock``
+    (threading.Lock) prevents REPL interleaving, and the per-session
+    ``asyncio.Lock`` prevents multiple SSE streams from overlapping.
     """
     import asyncio
 
-    from CAi.web_ui.backend.deps import get_chat_lock
+    from CAi.web_ui.backend.deps import AgentSession
 
-    assert isinstance(get_chat_lock(), asyncio.Lock)
+    # AgentSession creates its own lock.
+    session = AgentSession(conv_id="test-conv", agent=None)
+    assert isinstance(session.lock, asyncio.Lock)
 
 
 def test_async_iter_agent_helper_exists():

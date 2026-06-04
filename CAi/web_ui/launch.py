@@ -5,6 +5,7 @@ Usage:
     python -m CAi.web_ui.launch
 """
 
+import socket
 from pathlib import Path
 
 import uvicorn
@@ -95,7 +96,29 @@ def _print_banner(host: str, port: int) -> None:
     print(f"   Frontend: http://{display_host}:{port}")
     print(f"   API docs: http://{display_host}:{port}/docs")
     print(f"   Health:   http://{display_host}:{port}/api/health")
+    # Show LAN IPs when listening on all interfaces
+    if host in ("0.0.0.0", "::"):
+        _lan_ips = _get_lan_ips()
+        if _lan_ips:
+            print(f"   LAN:      {'  '.join(f'http://{ip}:{port}' for ip in _lan_ips)}")
     print(f"{bar}\n")
+
+
+def _get_lan_ips() -> list[str]:
+    """Return non-loopback IPv4 addresses for LAN sharing hints."""
+    ips: list[str] = []
+    try:
+        # Get all interfaces via socket, filter non-loopback.
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            addr = info[4][0]
+            if not addr.startswith("127."):
+                ips.append(addr)
+    except Exception:
+        pass
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    return [ip for ip in ips if not (ip in seen or seen.add(ip))]
 
 
 if __name__ == "__main__":

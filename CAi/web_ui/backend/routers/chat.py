@@ -15,10 +15,12 @@ from CAi.logger import get_logger
 from ..chat_service import async_iter_agent, build_prompt, clean_stored_answer
 from ..conversation_store import ConversationStore
 from ..deps import (
+    AgentSession,
+    SessionManager,
     get_agent,
     get_agent_optional,
     get_cancel_events,
-    get_chat_lock,
+    get_session_manager,
     get_store,
     get_workspace_dir,
 )
@@ -27,64 +29,38 @@ logger = get_logger("CAi.web_ui.chat")
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
-# Cache the most recent session log so the utilities router can access it.
-_last_session_log: dict = {"log": [], "user_message": ""}
-
 
 # ---------------------------------------------------------------------------
 # Utility maintenance helper
 # ---------------------------------------------------------------------------
 
 
-async def _trigger_maintenance(agent, raw_session_log: list[dict]) -> None:
-    """Flush utility usage stats and conditionally run UtilityManager.
-
-    Runs as a fire-and-forget background task after the SSE stream completes.
-    Never raises — all errors are logged and swallowed.
-    """
-    try:
-        registry = getattr(agent, "utility_registry", None)
-        if registry is None:
-            return
-
-        # 1. Flush usage stats and persist to disk
-        from CAi.CAi_agent.execution.repl import flush_utility_usage
-
-        usage = flush_utility_usage()
-        if usage:
-            registry.apply_usage(usage)
-
-        # 2. Trigger UtilityManager only if there were observations (code executions)
-        has_executions = any(s.get("type") == "observation" for s in raw_session_log)
-        if not has_executions:
-            return
-
-        from CAi.CAi_agent.utilities import UtilityManager
-
-        manager = UtilityManager(registry, llm=agent.curator_llm)
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, manager.maintain, raw_session_log)
-    except Exception as e:
-        logger.warning("Utility maintenance failed: %s", e)
-
-
-async def _flush_usage_only(agent) -> None:
+async def _flush_usage_only(session: AgentSession) -> None:
     """Flush utility usage stats without triggering LLM maintenance.
 
-    The actual maintenance is now user-initiated via the frontend popup.
+    Runs as a fire-and-forget background task after the SSE stream completes.
+    Each session has its own kernel with its own usage accumulator.
     """
     try:
+        agent = session.agent
         registry = getattr(agent, "utility_registry", None)
         if registry is None:
             return
 
-        from CAi.CAi_agent.execution.repl import flush_utility_usage
+        kernel = getattr(agent, "_kernel_session", None)
+        if kernel is None:
+            return
 
-        usage = flush_utility_usage()
+        usage = kernel.flush_utility_usage()
         if usage:
             registry.apply_usage(usage)
     except Exception as e:
         logger.warning("Utility usage flush failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Chat endpoint
+# ---------------------------------------------------------------------------
 
 
 class ChatRequest(BaseModel):
@@ -101,13 +77,15 @@ async def health(agent=Depends(get_agent_optional)):
 @router.post("/chat")
 async def chat(
     request: ChatRequest,
-    agent=Depends(get_agent),
     store: ConversationStore = Depends(get_store),
     workspace_dir: str = Depends(get_workspace_dir),
-    chat_lock: asyncio.Lock = Depends(get_chat_lock),
     cancel_events: dict = Depends(get_cancel_events),
+    session_mgr: SessionManager = Depends(get_session_manager),
 ):
     """SSE stream of agent events.
+
+    Each conversation uses an independent kernel and lock, so multiple
+    users can chat concurrently without sharing REPL state.
 
     Event types sent to the frontend:
         conversation_id  — conversation UUID (first event)
@@ -123,9 +101,12 @@ async def chat(
         meta = store.create_conversation()
         conv_id = meta["id"]
 
+    # Get the per-session agent + lock.
+    session = session_mgr.get_session(conv_id)
+    session_agent = session.agent
+
     async def event_stream():
-        async with chat_lock:
-            # Accumulate raw session log for utility maintenance.
+        async with session.lock:
             raw_session_log: list[dict] = []
 
             try:
@@ -144,14 +125,10 @@ async def chat(
                 cancel_ev = asyncio.Event()
                 cancel_events[conv_id] = cancel_ev
 
-                # Collect all message_end + observation events in order, so we
-                # can persist the full reasoning trace (not just the final
-                # summary). This lets PDF export and conversation hydration
-                # see all intermediate steps.
                 full_trace_parts: list[str] = []
 
                 try:
-                    async for step in async_iter_agent(agent, agent_prompt, history, cancel_ev):
+                    async for step in async_iter_agent(session_agent, agent_prompt, history, cancel_ev):
                         ev_type = step.get("type")
                         ev_content = step.get("content", "")
 
@@ -169,14 +146,8 @@ async def chat(
                 finally:
                     cancel_events.pop(conv_id, None)
 
-                # Build the persisted answer from the full trace, not just the
-                # last message. Keep <execute>/<observation> tags so the
-                # frontend renderer and PDF export can reconstruct steps.
                 full_trace = "\n".join(full_trace_parts).strip() or last_full_message
                 stored_answer = full_trace
-                # The "solution" event is purely for the live UI, which already
-                # rendered everything via streaming tokens. Send a cleaned
-                # plain-text version to avoid re-rendering noise.
                 solution_for_ui = clean_stored_answer(last_full_message) or last_full_message
                 yield f"data: {json.dumps({'type': 'solution', 'content': solution_for_ui}, ensure_ascii=False)}\n\n"
 
@@ -201,19 +172,19 @@ async def chat(
                 )
                 store.save_messages(conv_id, stored_messages)
 
-                # Notify frontend if there were code executions (maintenance candidate).
-                # Must be sent BEFORE "done" because frontend stops reading after "done".
                 has_executions = any(s.get("type") == "observation" for s in raw_session_log)
                 if has_executions:
                     yield f"data: {json.dumps({'type': 'maintenance_pending'})}\n\n"
-                    # Cache session log + user message for utilities router.
-                    _last_session_log["log"] = raw_session_log
-                    _last_session_log["user_message"] = request.message
+                    # Cache session log on the session for utilities router.
+                    session.last_session_log = {
+                        "log": raw_session_log,
+                        "user_message": request.message,
+                    }
 
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-                # Fire-and-forget: flush utility usage stats (no LLM call here).
-                asyncio.ensure_future(_flush_usage_only(agent))
+                # Fire-and-forget: flush utility usage from this session's kernel.
+                asyncio.ensure_future(_flush_usage_only(session))
 
             except Exception as e:
                 logger.exception("Chat stream error")

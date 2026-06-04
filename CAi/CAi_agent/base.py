@@ -70,6 +70,9 @@ class BaseAgent:
         system_prompt: str | None = None,
         max_history_pairs: int = _DEFAULT_MAX_HISTORY_PAIRS,
         context_compress_hook: Callable[[list[dict]], list[dict]] | None = None,
+        # Optional per-session kernel — when set, code runs in that kernel
+        # instead of the process-wide default. See ``KernelSession``.
+        kernel_session=None,
     ):
         self.timeout_seconds = timeout_seconds
         self._system_prompt = system_prompt or self._default_system_prompt()
@@ -77,6 +80,8 @@ class BaseAgent:
         # Hook to override the default hybrid_compress strategy.
         # Signature: (history: list[dict]) -> list[dict]
         self._context_compress_hook = context_compress_hook
+        # Per-session kernel (None → uses the default global kernel).
+        self._kernel_session = kernel_session
 
         # Init LLM. api_key=None lets the factory read the provider-specific
         # env var ("EMPTY" is used automatically for Custom endpoints that
@@ -193,7 +198,7 @@ RULES:
                     if not python_injected:
                         self._inject_functions_to_repl()
                         python_injected = True
-                    result = run_python_repl(block.code, timeout=self.timeout_seconds)
+                    result = self._run_python(block.code)
                 results.append(result)
 
         combined = "\n".join(results)
@@ -201,10 +206,22 @@ RULES:
             combined = combined[:15000] + "\n\n[Output truncated — showing first 15K chars]"
         return wrap_observation(combined)
 
+    def _run_python(self, code: str) -> str:
+        """Run Python code — uses per-session kernel if set, else global default."""
+        session = self._kernel_session
+        if session is not None:
+            return session.run_python(code, timeout=self.timeout_seconds)
+        return run_python_repl(code, timeout=self.timeout_seconds)
+
     def _inject_functions_to_repl(self):
         """Make registered tools callable from inside the REPL."""
         custom_fns = getattr(builtins, "_base_CAi_custom_functions", None)
-        if custom_fns:
+        if not custom_fns:
+            return
+        session = self._kernel_session
+        if session is not None:
+            session.inject_tools(custom_fns)
+        else:
             inject_custom_functions(custom_fns)
 
     # ------------------------------------------------------------------

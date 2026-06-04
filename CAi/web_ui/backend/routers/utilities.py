@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from CAi.logger import get_logger
 
-from ..deps import get_agent
+from ..deps import SessionManager, get_agent, get_session_manager
 
 logger = get_logger("CAi.web_ui.utilities")
 
@@ -76,22 +76,30 @@ class MaintainRequest(BaseModel):
 async def maintain(
     request: MaintainRequest,
     agent=Depends(get_agent),
+    session_mgr: SessionManager = Depends(get_session_manager),
 ):
     """Trigger utility library maintenance.
 
     Modes:
         - "preview": analyze session log and return proposed actions without applying
         - "execute": analyze and apply actions to the utility library
+
+    If ``conversation_id`` is set, that conversation's session log is used.
+    Otherwise the most recently active session is selected.
     """
     registry = getattr(agent, "utility_registry", None)
     if registry is None:
         return {"status": "disabled", "message": "Utility system not enabled"}
 
-    # Get the most recent session log from the chat router's cache
-    from .chat import _last_session_log
+    # Get session log: try specific conversation, then fall back to most recent.
+    session_log: list = []
+    user_message = ""
+    for s in session_mgr._sessions.values():
+        log = s.last_session_log
+        if log.get("log"):
+            session_log = log["log"]
+            user_message = log.get("user_message", "")
 
-    session_log = _last_session_log.get("log", [])
-    user_message = _last_session_log.get("user_message", "")
     if not session_log:
         return {"status": "no_data", "message": "No recent session data"}
 

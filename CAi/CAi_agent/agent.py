@@ -12,8 +12,10 @@ A1pro 本身只做编排工作：
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from threading import Lock
 
 from CAi.CAi_agent.base import BaseAgent
 from CAi.CAi_agent.prompt import (
@@ -45,6 +47,7 @@ class A1pro(BaseAgent):
         base_url: str | None = None,
         api_key: str | None = None,
         temperature: float | None = None,
+        request_timeout: float | None = None,
         timeout_seconds: int = 600,
         # Tools
         auto_load_tools: bool = True,
@@ -105,6 +108,7 @@ class A1pro(BaseAgent):
             base_url=base_url,
             api_key=api_key,
             temperature=temperature,
+            request_timeout=request_timeout,
             timeout_seconds=timeout_seconds,
             system_prompt="",  # overwritten right after by _rebuild_prompt
         )
@@ -299,6 +303,29 @@ class A1pro(BaseAgent):
         self.skill_loader.reload()
         self._rebuild_prompt()
         logger.info("Skills reloaded")
+
+    # ------------------------------------------------------------------
+    # Session cloning (multi-user support)
+    # ------------------------------------------------------------------
+
+    def clone_for_session(self, kernel_session) -> "A1pro":
+        """Create a shallow copy that shares LLM, tool registry, and prompt,
+        but uses an independent ``KernelSession`` for code execution.
+
+        The cloned agent is suitable for one conversation's chat requests
+        without interfering with other concurrent conversations.
+        """
+        cloned = copy.copy(self)
+        cloned._kernel_session = kernel_session
+        cloned._exec_lock = Lock()  # independent execution lock
+
+        # Inject utilities into the new kernel (if utilities are enabled).
+        if self.utility_registry is not None:
+            utilities = self.utility_registry.load_snapshot()
+            if utilities:
+                kernel_session.inject_utilities(utilities)
+
+        return cloned
 
     # ------------------------------------------------------------------
     # Web UI integration
