@@ -19,7 +19,7 @@ ANTHROPIC_API_KEY, DEEPSEEK_API_KEY) when not supplied explicitly.
 from __future__ import annotations
 
 import os
-from typing import Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -48,7 +48,8 @@ def get_llm(
     source: SourceType | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
-) -> "BaseChatModel":
+    request_timeout: float | None = None,
+) -> BaseChatModel:
     """Return a configured langchain chat model.
 
     Args:
@@ -62,6 +63,10 @@ def get_llm(
         api_key:        Overrides the environment variable for the chosen
                         provider. Pass "EMPTY" for local servers that
                         don't require auth.
+        request_timeout: HTTP request timeout in seconds. When None, reads
+                        ``LLM_REQUEST_TIMEOUT`` env var; if that is 0 or
+                        unset, uses the SDK default (typically 600s for
+                        streaming).
 
     Returns:
         A configured langchain chat model.
@@ -78,14 +83,19 @@ def get_llm(
 
     source = source or _detect_source(model, base_url)
 
+    # Resolve timeout: explicit arg > env var > SDK default
+    if request_timeout is None:
+        env_timeout = int(os.getenv("LLM_REQUEST_TIMEOUT", "0"))
+        request_timeout = env_timeout if env_timeout > 0 else None
+
     if source == "OpenAI":
-        return _build_openai(model, temperature, stop_sequences, api_key)
+        return _build_openai(model, temperature, stop_sequences, api_key, request_timeout)
     if source == "Anthropic":
-        return _build_anthropic(model, temperature, stop_sequences, api_key)
+        return _build_anthropic(model, temperature, stop_sequences, api_key, request_timeout)
     if source == "DeepSeek":
-        return _build_deepseek(model, temperature, stop_sequences, api_key)
+        return _build_deepseek(model, temperature, stop_sequences, api_key, request_timeout)
     if source == "Custom":
-        return _build_custom(model, temperature, stop_sequences, base_url, api_key)
+        return _build_custom(model, temperature, stop_sequences, base_url, api_key, request_timeout)
 
     raise ValueError(
         f"Unknown LLM source: {source!r}. "
@@ -128,7 +138,7 @@ def _detect_source(model: str, base_url: str | None) -> SourceType:
 # ---------------------------------------------------------------------------
 
 
-def _build_openai(model, temperature, stop_sequences, api_key):
+def _build_openai(model, temperature, stop_sequences, api_key, request_timeout):
     try:
         from langchain_openai import ChatOpenAI
     except ImportError as e:
@@ -155,6 +165,7 @@ def _build_openai(model, temperature, stop_sequences, api_key):
             stop_sequences=stop_sequences,
             use_responses_api=True,
             output_version="v0",
+            **({"request_timeout": request_timeout} if request_timeout else {}),
         )
 
     return ChatOpenAI(
@@ -162,10 +173,11 @@ def _build_openai(model, temperature, stop_sequences, api_key):
         temperature=temperature,
         api_key=key,
         stop_sequences=stop_sequences,
+        **({"request_timeout": request_timeout} if request_timeout else {}),
     )
 
 
-def _build_anthropic(model, temperature, stop_sequences, api_key):
+def _build_anthropic(model, temperature, stop_sequences, api_key, request_timeout):
     try:
         from langchain_anthropic import ChatAnthropic
     except ImportError as e:
@@ -186,10 +198,11 @@ def _build_anthropic(model, temperature, stop_sequences, api_key):
         max_tokens=_DEFAULT_MAX_TOKENS,
         api_key=key,
         stop_sequences=stop_sequences,
+        **({"request_timeout": request_timeout} if request_timeout else {}),
     )
 
 
-def _build_deepseek(model, temperature, stop_sequences, api_key):
+def _build_deepseek(model, temperature, stop_sequences, api_key, request_timeout):
     """DeepSeek exposes an OpenAI-compatible API at api.deepseek.com."""
     try:
         from langchain_openai import ChatOpenAI
@@ -212,10 +225,11 @@ def _build_deepseek(model, temperature, stop_sequences, api_key):
         api_key=key,
         base_url=DEEPSEEK_BASE_URL,
         stop_sequences=stop_sequences,
+        **({"request_timeout": request_timeout} if request_timeout else {}),
     )
 
 
-def _build_custom(model, temperature, stop_sequences, base_url, api_key):
+def _build_custom(model, temperature, stop_sequences, base_url, api_key, request_timeout):
     """Any OpenAI-compatible endpoint: local SGLang / vLLM / corporate proxies."""
     try:
         from langchain_openai import ChatOpenAI
@@ -237,6 +251,7 @@ def _build_custom(model, temperature, stop_sequences, base_url, api_key):
         base_url=base_url,
         api_key=api_key or "EMPTY",
         stop_sequences=stop_sequences,
+        **({"request_timeout": request_timeout} if request_timeout else {}),
     )
 
 

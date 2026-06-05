@@ -182,7 +182,7 @@ RULES:
                 if block.lang == "plan":
                     # Plan blocks are not executed — they're preserved in
                     # conversation history for reference across context compression.
-                    results.append("[Plan recorded]")
+                    result = "[Plan recorded]"
                 elif block.lang == "bash":
                     result = run_with_timeout(
                         run_bash_script, [block.code], timeout=self.timeout_seconds

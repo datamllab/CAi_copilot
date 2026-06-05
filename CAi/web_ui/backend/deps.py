@@ -83,8 +83,7 @@ class SessionManager:
         cloned_agent = self._prototype.clone_for_session(kernel)
         session = AgentSession(conv_id, cloned_agent)
         self._sessions[conv_id] = session
-        logger.debug("Created session for conv %s (kernel pid=%s)",
-                     conv_id, kernel._km.kernel.pid if kernel._km else "pending")
+        logger.debug("Created session for conv %s", conv_id)
         return session
 
     def evict(self, conv_id: str) -> None:

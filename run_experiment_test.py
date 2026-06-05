@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -49,6 +50,23 @@ from CAi.experiment import (
     run_experiment,
 )
 
+# Config keys and their argparse attribute names
+_CONFIG_KEY_MAP = {
+    "model": "model",
+    "source": "source",
+    "base_url": "base_url",
+    "temperature": "temperature",
+    "request_timeout": "request_timeout",
+    "workers": "workers",
+    "timeout": "timeout",
+    "no_tools": "no_tools",
+    "no_skills": "no_skills",
+    "utilities": "utilities",
+    "output_dir": "output_dir",
+    "prompt_field": "prompt_field",
+    "id_field": "id_field",
+}
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run CAi experiment")
@@ -61,23 +79,32 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-dir", default="experiments",
                    help="Root directory for experiment results (default: experiments/)")
 
+    # Config file
+    p.add_argument("--config", default=None,
+                   help="Path to experiment config.json. If not specified, auto-discovers "
+                        "config.json from the dataset directory.")
+
     # Agent config
-    p.add_argument("--model", default=LLM_MODEL, help="LLM model")
-    p.add_argument("--source", default=LLM_SOURCE, help="LLM source")
-    p.add_argument("--base-url", default=LLM_BASE_URL, help="LLM base URL")
+    p.add_argument("--model", default=None, help="LLM model")
+    p.add_argument("--source", default=None, help="LLM source")
+    p.add_argument("--base-url", default=None, help="LLM base URL")
+    p.add_argument("--temperature", type=float, default=None,
+                   help="LLM sampling temperature")
+    p.add_argument("--request-timeout", type=int, default=None,
+                   help="LLM HTTP request timeout in seconds")
     p.add_argument("--no-tools", action="store_true", help="Disable tool loading")
     p.add_argument("--no-skills", action="store_true", help="Disable skill loading")
     p.add_argument("--utilities", action="store_true", help="Enable utility loading (default: off)")
 
     # Execution
-    p.add_argument("--workers", type=int, default=1,
+    p.add_argument("--workers", type=int, default=None,
                    help="Number of parallel workers (1=sequential, >1=multiprocessing)")
-    p.add_argument("--timeout", type=int, default=300,
+    p.add_argument("--timeout", type=int, default=None,
                    help="Per-item timeout in seconds")
 
     # Dataset field mapping
-    p.add_argument("--prompt-field", default="prompt", help="Field name for prompt text")
-    p.add_argument("--id-field", default="id", help="Field name for item ID")
+    p.add_argument("--prompt-field", default=None, help="Field name for prompt text")
+    p.add_argument("--id-field", default=None, help="Field name for item ID")
 
     # Resume
     p.add_argument("--resume", nargs="?", const=True, default=None,
@@ -87,6 +114,77 @@ def parse_args() -> argparse.Namespace:
                         "the most recent run directory under output-dir.")
 
     return p.parse_args()
+
+
+def discover_config(dataset_path: str | Path) -> Path | None:
+    """Auto-discover config.json from the dataset directory.
+
+    Search order:
+    1. {dataset_stem}_config.json  (e.g. toolkit_smoke_test_config.json)
+    2. config.json in the same directory
+    """
+    p = Path(dataset_path)
+    parent = p.parent
+
+    # Try dataset-specific config first
+    specific = parent / f"{p.stem}_config.json"
+    if specific.exists():
+        return specific
+
+    # Try generic config.json
+    generic = parent / "config.json"
+    if generic.exists():
+        return generic
+
+    return None
+
+
+def load_exp_config(config_path: str | Path) -> dict:
+    """Load experiment config from a JSON file."""
+    with open(config_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def merge_config(args: argparse.Namespace, config: dict) -> argparse.Namespace:
+    """Merge config.json values into args where CLI didn't provide a value.
+
+    Priority: CLI args > config.json > env defaults.
+    """
+    for config_key, arg_name in _CONFIG_KEY_MAP.items():
+        if config_key not in config:
+            continue
+        current = getattr(args, arg_name, None)
+        # Only apply config value if CLI didn't set it (still None)
+        # For boolean flags (store_true), only override if explicitly False (default)
+        if isinstance(config[config_key], bool):
+            if not current:  # False means not set on CLI
+                setattr(args, arg_name, config[config_key])
+        elif current is None:
+            setattr(args, arg_name, config[config_key])
+    return args
+
+
+def apply_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill in .env defaults for any remaining None values."""
+    if args.model is None:
+        args.model = LLM_MODEL
+    if args.source is None:
+        args.source = LLM_SOURCE
+    if args.base_url is None:
+        args.base_url = LLM_BASE_URL
+    if args.temperature is None:
+        args.temperature = 0.7
+    if args.request_timeout is None:
+        args.request_timeout = 0
+    if args.workers is None:
+        args.workers = 1
+    if args.timeout is None:
+        args.timeout = 300
+    if args.prompt_field is None:
+        args.prompt_field = "prompt"
+    if args.id_field is None:
+        args.id_field = "id"
+    return args
 
 
 def create_run_dir(base_dir: str | Path, name: str) -> Path:
@@ -123,7 +221,7 @@ def resolve_resume_dir(args: argparse.Namespace) -> Path:
 
 
 def save_config(run_dir: Path, args: argparse.Namespace, dataset_size: int,
-                total_wall: float) -> None:
+                total_wall: float, exp_config_path: str | None = None) -> None:
     """Save experiment configuration as JSON."""
     config = {
         "experiment_name": args.name or Path(args.dataset).stem,
@@ -138,6 +236,8 @@ def save_config(run_dir: Path, args: argparse.Namespace, dataset_size: int,
             "model": args.model,
             "source": args.source,
             "base_url": args.base_url,
+            "temperature": args.temperature,
+            "request_timeout": args.request_timeout,
             "auto_load_tools": not args.no_tools,
             "auto_load_skills": not args.no_skills,
             "auto_load_utilities": args.utilities,
@@ -151,6 +251,8 @@ def save_config(run_dir: Path, args: argparse.Namespace, dataset_size: int,
             "total_wall_time_seconds": round(total_wall, 2),
         },
     }
+    if exp_config_path:
+        config["experiment_config_file"] = str(exp_config_path)
     with open(run_dir / "config.json", "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
@@ -211,6 +313,7 @@ def write_final_outputs(
     total: int,
     total_wall: float,
     args: argparse.Namespace,
+    exp_config_path: str | None = None,
 ) -> None:
     """Regenerate all output files from a list of results."""
     from CAi.experiment.persistence import save_csv, save_json
@@ -219,12 +322,36 @@ def write_final_outputs(
     report.output_path = str(run_dir / "results.json")
     save_json(report, run_dir / "results.json")
     save_csv(report, run_dir / "results.csv")
-    save_config(run_dir, args, total, total_wall)
+    save_config(run_dir, args, total, total_wall, exp_config_path)
     save_summary(run_dir, report, total_wall, args)
 
 
 def main() -> None:
     args = parse_args()
+
+    # ── Config loading: CLI > config.json > .env ────────────────────
+    config_path = None
+    if args.config:
+        config_path = Path(args.config)
+        if not config_path.exists():
+            print(f"[ERROR] Config file not found: {config_path}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        config_path = discover_config(args.dataset)
+
+    if config_path:
+        exp_config = load_exp_config(config_path)
+        args = merge_config(args, exp_config)
+        print(f"[CONFIG] Loaded experiment config from {config_path}")
+    else:
+        exp_config = {}
+
+    # Fill in .env defaults for any remaining None values
+    args = apply_defaults(args)
+
+    # Propagate request_timeout to env for worker subprocesses
+    if args.request_timeout and args.request_timeout > 0:
+        os.environ["LLM_REQUEST_TIMEOUT"] = str(args.request_timeout)
 
     # Load dataset
     dataset = load_dataset(
@@ -245,10 +372,13 @@ def main() -> None:
         "source": args.source,
         "base_url": args.base_url,
         "api_key": LLM_API_KEY,
+        "temperature": args.temperature,
         "auto_load_tools": not args.no_tools,
         "auto_load_skills": not args.no_skills,
         "auto_load_utilities": args.utilities,
     }
+    if args.request_timeout and args.request_timeout > 0:
+        agent_args["request_timeout"] = args.request_timeout
 
     # ── Resume logic ──────────────────────────────────────────────
     old_results: list[ExperimentResult] = []
@@ -271,7 +401,8 @@ def main() -> None:
 
         if not remaining:
             print("[RESUME] All items already completed. Regenerating outputs.")
-            write_final_outputs(run_dir, old_results, total_dataset_size, 0.0, args)
+            write_final_outputs(run_dir, old_results, total_dataset_size, 0.0, args,
+                                str(config_path) if config_path else None)
             print(f"\nSaved to: {run_dir}/")
             return
 
@@ -348,7 +479,8 @@ def main() -> None:
 
     save_json(report, run_dir / "results.json")
     save_csv(report, run_dir / "results.csv")
-    save_config(run_dir, args, total_dataset_size, total_wall)
+    save_config(run_dir, args, total_dataset_size, total_wall,
+                str(config_path) if config_path else None)
     save_summary(run_dir, report, total_wall, args)
 
     # Print summary

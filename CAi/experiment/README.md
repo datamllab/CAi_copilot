@@ -88,14 +88,17 @@ python run_experiment_test.py \
 | `--dataset` | 数据集文件路径 | `experiment_test_tasks.json` |
 | `--name` | 实验名称（用于目录命名） | 数据集文件名 |
 | `--output-dir` | 结果根目录 | `experiments/` |
+| `--config` | 实验配置文件路径 | 自动发现（见下方说明） |
 
 ### Agent 配置
 
 | 参数 | 说明 | 默认值 |
 |---|---|---|
-| `--model` | LLM 模型名 | `.env` 中的 `LLM_MODEL` |
-| `--source` | LLM 来源（Custom/Anthropic/OpenAI 等） | `.env` 中的 `LLM_SOURCE` |
-| `--base-url` | LLM API 地址 | `.env` 中的 `LLM_BASE_URL` |
+| `--model` | LLM 模型名 | config.json > `.env` |
+| `--source` | LLM 来源（Custom/Anthropic/OpenAI 等） | config.json > `.env` |
+| `--base-url` | LLM API 地址 | config.json > `.env` |
+| `--temperature` | LLM 采样温度 | config.json > `.env`（默认 0.7） |
+| `--request-timeout` | LLM HTTP 请求超时（秒） | config.json（默认 0 = SDK 默认） |
 | `--no-tools` | 禁用工具加载 | 默认加载 |
 | `--no-skills` | 禁用技能加载 | 默认加载 |
 | `--utilities` | 启用 utility 加载 | 默认禁用 |
@@ -104,11 +107,67 @@ python run_experiment_test.py \
 
 | 参数 | 说明 | 默认值 |
 |---|---|---|
-| `--workers` | 并行 worker 数量 | `1`（顺序） |
-| `--timeout` | 单条任务超时（秒） | `300` |
+| `--workers` | 并行 worker 数量 | config.json > `.env`（默认 1） |
+| `--timeout` | 单条任务超时（秒） | config.json > `.env`（默认 300） |
 | `--prompt-field` | prompt 字段名 | `prompt` |
 | `--id-field` | id 字段名 | `id` |
 | `--resume [RUN_DIR]` | 断点重跑（见下方说明） | 禁用 |
+
+## 实验配置 `config.json`
+
+每个实验可以有自己的 `config.json`，独立于全局 `.env`。参数优先级：**CLI 参数 > config.json > .env**。
+
+### 自动发现
+
+当不指定 `--config` 时，runner 自动在 dataset 文件所在目录查找：
+
+1. `{dataset_stem}_config.json`（如 `toolkit_smoke_test_config.json`）
+2. `config.json`（通用配置）
+
+### `config.json` 格式
+
+```json
+{
+  "model": "deepseek-v4-flash",
+  "source": "Custom",
+  "base_url": "http://35.220.164.252:3888/v1/",
+  "temperature": 0.7,
+  "request_timeout": 1800,
+  "workers": 2,
+  "timeout": 600,
+  "no_tools": false,
+  "no_skills": false,
+  "utilities": false,
+  "output_dir": "experiments",
+  "prompt_field": "prompt",
+  "id_field": "id"
+}
+```
+
+所有字段均可选，未设置的回退到 `.env` 或内置默认值。
+
+### 典型目录结构
+
+```
+experiments/cai_eval/
+├── config.json                        # 通用实验配置
+├── cai_30_prompt_dataset_first15.json # 数据集
+├── toolkit_smoke_test.json            # 数据集
+└── toolkit_smoke_test_config.json     # 可选：特定数据集的覆盖配置
+```
+
+运行时无需指定 `--config`，runner 会自动加载：
+
+```bash
+# 自动使用 experiments/cai_eval/config.json
+python run_experiment_test.py --dataset experiments/cai_eval/toolkit_smoke_test.json
+
+# 显式指定配置文件
+python run_experiment_test.py --dataset bench.json --config my_config.json
+
+# CLI 参数覆盖 config.json 中的值
+python run_experiment_test.py --dataset bench.json --workers 4 --timeout 900
+```
 
 ## 实时进度
 
@@ -335,10 +394,11 @@ print(df.head())
 
 ## 注意事项
 
-1. **LLM 配置**：默认读取 `CAi/.env` 文件，也可用 `--model` / `--base-url` 等覆盖
-2. **Tool Server**：需要 Tool Server 已启动（`TOOL_SERVER_HOST` 和 `TOOL_SERVER_PORT` 在 `.env` 配置）
-3. **内存**：每个 worker 独立启动 Jupyter kernel，`--workers 4` 大约需要额外 ~2GB 内存
-4. **超时**：`--timeout` 是单条任务的硬超时（通过 SIGALRM 实现），不是总超时
-5. **并发安全**：使用 `spawn` 上下文创建子进程，确保每个 worker 有独立的 REPL kernel 和 builtins，不会互相干扰
-6. **崩溃安全**：每条结果立即写入 `checkpoint.jsonl`，崩溃后最多丢失最后一条
-7. **断点重跑**：依赖 dataset item 的 `id` 字段做去重匹配，没有 id 的 item 每次都会重新运行
+1. **配置优先级**：CLI 参数 > config.json > .env > 内置默认值
+2. **LLM 配置**：默认读取 `CAi/.env` 文件，推荐通过实验级 `config.json` 管理
+3. **Tool Server**：需要 Tool Server 已启动（`TOOL_SERVER_HOST` 和 `TOOL_SERVER_PORT` 在 `.env` 配置）
+4. **内存**：每个 worker 独立启动 Jupyter kernel，`--workers 4` 大约需要额外 ~2GB 内存
+5. **超时**：`--timeout` 是单条任务的硬超时（通过 SIGALRM 实现），`--request-timeout` 是 LLM API HTTP 请求超时
+6. **并发安全**：使用 `spawn` 上下文创建子进程，确保每个 worker 有独立的 REPL kernel 和 builtins，不会互相干扰
+7. **崩溃安全**：每条结果立即写入 `checkpoint.jsonl`，崩溃后最多丢失最后一条
+8. **断点重跑**：依赖 dataset item 的 `id` 字段做去重匹配，没有 id 的 item 每次都会重新运行

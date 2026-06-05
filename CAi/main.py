@@ -33,9 +33,8 @@ from CAi.config import (
     LLM_MODEL,
     LLM_SOURCE,
     LLM_TEMPERATURE,
+    WEB_UI_PORT,
 )
-
-WEB_UI_PORT = 8888
 
 
 def _parse_args() -> argparse.Namespace:

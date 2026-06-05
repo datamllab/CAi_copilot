@@ -44,6 +44,10 @@ TOOL_SERVER_PORT = int(os.getenv("TOOL_SERVER_PORT", "8001"))
 WEB_BACKEND_HOST = os.getenv("WEB_BACKEND_HOST", "0.0.0.0")
 WEB_BACKEND_PORT = int(os.getenv("WEB_BACKEND_PORT", "8000"))
 
+# CAi/main.py — Web UI server (FastAPI + static frontend)
+# Default 7000 to avoid conflict with platform Jupyter Lab (typically on 8888)
+WEB_UI_PORT = int(os.getenv("WEB_UI_PORT", "9966"))
+
 # CAi/web_ui/frontend — Vite dev server (not used in production)
 WEB_FRONTEND_PORT = int(os.getenv("WEB_FRONTEND_PORT", "3000"))
 
@@ -77,6 +81,11 @@ LLM_API_KEY = os.getenv("LLM_API_KEY") or None
 
 # Sampling temperature. Keep conservative for reproducibility.
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+
+# HTTP request timeout (seconds) for LLM API calls.
+# Long reasoning prompts with tool chains can easily exceed the default
+# 600s from httpx. Set to 0 to use SDK defaults.
+LLM_REQUEST_TIMEOUT = int(os.getenv("LLM_REQUEST_TIMEOUT", "0"))
 
 
 # =============================================================================

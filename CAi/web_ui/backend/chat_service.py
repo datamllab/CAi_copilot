@@ -108,4 +108,11 @@ async def async_iter_agent(
                 break
             yield step
     finally:
-        gen.close()
+        # gen may still be executing in the thread pool if we were cancelled.
+        # Python raises ValueError if close() is called while next(gen) is
+        # in-flight on another thread. We swallow it — the thread will finish
+        # and the result is simply discarded.
+        try:
+            gen.close()
+        except ValueError:
+            pass

@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,19 @@ _DEFAULT_AGENT_ARGS = {
     "auto_load_skills": True,
     "auto_load_utilities": False,  # Utilities are per-session; disable for batch
 }
+
+
+# Proxy env vars that must be propagated to spawn workers
+_PROXY_ENV_VARS = (
+    "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+    "no_proxy", "NO_PROXY",
+    "LLM_REQUEST_TIMEOUT",
+)
+
+
+def _worker_init(proxy_env: dict[str, str]) -> None:
+    """Initializer for spawn workers — ensures proxy + timeout env vars are set."""
+    os.environ.update(proxy_env)
 
 
 def run_experiment(
@@ -112,7 +126,13 @@ def run_experiment(
     else:
         # Multiprocessing mode — spawn context for clean isolation
         ctx = mp.get_context("spawn")
-        pool = ctx.Pool(processes=max_workers)
+        # Collect proxy/timeout env vars from the parent to pass to workers
+        proxy_env = {k: v for k, v in os.environ.items() if k in _PROXY_ENV_VARS and v}
+        pool = ctx.Pool(
+            processes=max_workers,
+            initializer=_worker_init,
+            initargs=(proxy_env,),
+        )
         async_results: list[mp.pool.AsyncResult] = []
 
         for item in dataset:
