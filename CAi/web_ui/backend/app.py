@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .deps import set_agent  # re-exported for launch.py
-from .routers import chat, conversations, files, utilities, workspace
+from .routers import chat, conversations, files, memory, utilities, workspace
 
 app = FastAPI(title="CAi Web UI API", version="2.1.0")
 
@@ -38,3 +38,4 @@ app.include_router(chat.router)
 app.include_router(files.router)
 app.include_router(workspace.router)
 app.include_router(utilities.router)
+app.include_router(memory.router)

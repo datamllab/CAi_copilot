@@ -106,3 +106,12 @@ CURATOR_SOURCE: str | None = os.getenv("CURATOR_SOURCE") or LLM_SOURCE
 CURATOR_BASE_URL = os.getenv("CURATOR_BASE_URL") or LLM_BASE_URL
 CURATOR_API_KEY = os.getenv("CURATOR_API_KEY") or LLM_API_KEY
 CURATOR_TEMPERATURE = float(os.getenv("CURATOR_TEMPERATURE", "0.2"))
+
+
+# =============================================================================
+# Memory subsystem
+# =============================================================================
+
+MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "true").lower() in ("true", "1", "yes")
+MEMORY_DIR = WORKSPACE_DIR / "agent_workspace" / "_memory"
+MEMORY_MAX_ENTRIES = int(os.getenv("MEMORY_MAX_ENTRIES", "100"))

@@ -13,6 +13,8 @@ BaseAgent  (execution core: LangGraph + LLM + REPL)
               ├── prompt/      (PromptBuilder + sections)
               ├── tools/       (ToolRegistry + ReplBridge + Scanners)
               ├── utilities/   (UtilityRegistry + UtilityManager — self-learning code reuse)
+              ├── memory/      (MemoryStore + MemoryManager — cross-session persistent memory)
+              ├── compression/ (ContextCompressor — conversation history pruning)
               ├── skills/      (SkillLoader — SOP markdown files)
               └── web_ui/      (FastAPI + static frontend)
 ```
@@ -155,8 +157,78 @@ agent.run_with_history_streaming(prompt, history)    # streaming with prior conv
 ```
 
 The agent is stateless — history is passed explicitly per call.
-An optional `context_compress_hook` can be passed to `BaseAgent.__init__`
-to trim history when it grows large.
+A `ContextCompressor` can be passed to `BaseAgent.__init__` (or configured
+via `max_history_pairs` / `context_compress_hook` for backward compat)
+to trim history when it grows large. See the Compression subsystem below.
+
+---
+
+## Compression subsystem
+
+`CAi/CAi_agent/compression/`
+
+Conversation history pruning for long-running conversations. The
+`ContextCompressor` class encapsulates the decision logic (size check →
+custom hook with fallback → default strategy dispatch) so the agent
+doesn't need to know about compression internals.
+
+```
+compression/
+├── __init__.py          # Public API: ContextCompressor, hybrid_compress
+├── _compressor.py       # ContextCompressor — orchestrator (size check + hook + strategy)
+├── _hybrid.py           # hybrid_compress — three-zone partition (default strategy)
+├── _scoring.py          # _score_message — importance heuristic
+└── _plan_preserve.py    # _preserve_plan decorator — keeps latest plan block alive
+```
+
+### ContextCompressor
+
+The single entry point for compression. Absorbs the decision logic that
+was previously scattered across `BaseAgent._maybe_compress_history`:
+
+```python
+from CAi.CAi_agent.compression import ContextCompressor
+
+compressor = ContextCompressor(
+    max_pairs=40,                   # compress when history > 80 messages
+    strategy=hybrid_compress,       # pluggable default strategy
+    custom_hook=None,               # optional override (takes precedence)
+)
+
+# Pass to agent at construction:
+agent = BaseAgent(compressor=compressor, ...)
+```
+
+### Compression timing constraint
+
+**Compression fires exactly once** — when the user sends a message (at
+the entry point of `run_with_history*`). The generate→execute→generate
+loop appends directly to the `messages` list and MUST NOT re-invoke
+compression. Mid-loop compression would discard observations the agent
+is actively reasoning about. This is documented as an architectural
+invariant in `BaseAgent._build_messages`.
+
+### Default strategy: hybrid partition (Scheme B)
+
+Zero extra LLM calls. Three-zone model when history exceeds the budget:
+
+| Zone | Content | Treatment |
+|------|---------|-----------|
+| Recent (~50%) | Latest messages | Kept verbatim |
+| Middle | Older messages | Keep only score ≥ 6 |
+| Oldest | Earliest messages | Dropped, with a summary notice |
+
+Scoring heuristic: user messages (10), observations (8), domain keywords
+(6), execute blocks (5), plain reasoning (2). Plan blocks
+(`<execute lang="plan">`) are special-cased — the latest plan always
+survives compression via the `_preserve_plan` decorator.
+
+### Custom strategies
+
+The `strategy` parameter accepts any callable with the signature
+`(history, max_pairs=N) -> compressed_history`. The `custom_hook`
+parameter provides a legacy override path; if it raises, the strategy
+is used as a fallback.
 
 ---
 
@@ -388,10 +460,101 @@ agent_workspace/_utilities/
 |---------|----------|---------------|-----------|----------------|
 | Tools | `CAi/toolkit/` | Developer | ReplBridge → cloudpickle | ToolsSection |
 | Utilities | `_utilities/*.py` | Agent (UtilityManager) | inject_utilities_with_monitoring | UtilitiesSection |
+| Memory | `_memory/memories.json` | Agent (MemoryManager) + User | MemoryStore → keyword search | MemorySection |
 | Skills | `skills/*.md` | Developer | SkillLoader → text | SkillsSection |
 
-Three parallel pipelines, no interference. The utilities subsystem does
-not touch existing Tool / Skill / Prompt code.
+Four parallel pipelines, no interference.
+
+---
+
+## Memory subsystem
+
+`CAi/CAi_agent/memory/`
+
+Cross-session persistent memory. The agent accumulates user preferences,
+project context, and domain facts across conversations. Memories are
+retrieved by keyword + tag matching and injected into the agent prompt.
+
+```
+memory/
+├── __init__.py       # Public API: MemoryEntry, MemoryStore, MemorySection, MemoryManager
+├── _entry.py         # MemoryEntry — immutable dataclass (one memory fact)
+├── _store.py         # MemoryStore — disk ↔ memory bridge, CRUD, search, observer
+├── _section.py       # MemorySection — PromptSection rendering
+└── _manager.py       # MemoryManager — curator LLM for auto-extraction
+```
+
+### Storage layout
+
+```
+agent_workspace/_memory/
+├── memories.json     # all entries as a JSON array
+└── _traces/          # MemoryManager LLM call traces
+```
+
+### MemoryEntry
+
+Frozen dataclass. Three categories:
+
+| Category | Example |
+|----------|---------|
+| `preference` | "User prefers Chinese language responses" |
+| `project_context` | "Target: EGFR kinase, lead optimization phase" |
+| `domain_fact` | "Best docking score for compound X: -9.2 kcal/mol" |
+
+Fields: `id`, `category`, `content`, `tags`, `source` ("auto"/"user"),
+`importance` (1-10), timestamps, `access_count`, `last_accessed`.
+
+### MemoryStore
+
+Thread-safe (RLock), observable (`on_change` callbacks), disk ↔ memory
+bridge. Key features:
+
+- **Keyword search**: tokenize query → match against content + tags,
+  score = `tag_match × 3 + keyword_match + importance × 0.1`. No vector
+  search, zero new dependencies.
+- **Dedup**: Jaccard similarity > 0.8 on content tokens → merge (tags
+  union, importance max) instead of creating a duplicate.
+- **Eviction**: when exceeding `max_memories` (default 100), evict
+  lowest-importance + least-recently-accessed entries.
+- **Observer**: `on_change(callback)` notifies subscribers (A1pro uses
+  this to auto-rebuild the prompt when memories change).
+
+### MemorySection
+
+`PromptSection` subclass. Renders relevant memories into the agent
+system prompt, grouped by category (User Preferences / Project Context /
+Domain Facts). Returns empty string when no memories match (section
+auto-dropped by PromptBuilder).
+
+The section's search context is updated once per user message via
+`set_context(query)` so retrieval stays relevant to the current topic.
+
+**Position in prompt**: after CoreSection, before UtilitiesSection.
+
+### MemoryManager
+
+Independent curator (not a BaseAgent subclass). Reviews session logs at
+conversation end and uses the curator LLM to decide what to save, update,
+or delete. Same 3-strategy JSON parsing and trace persistence pattern as
+UtilityManager.
+
+Triggered as a fire-and-forget async task after SSE stream completes
+(only when the session had code executions). The extraction prompt
+instructs the LLM to identify:
+- User preferences (explicit statements: "I prefer...", "Don't...")
+- Project state (target molecules, screening campaigns, constraints)
+- Domain facts (key results, successful parameters, thresholds)
+
+### Integration timing
+
+1. **User message arrives** → `agent.update_memory_context(message)` →
+   MemorySection updates its search query → prompt rebuilt with relevant
+   memories.
+2. **Session ends** (SSE stream done, has executions) → fire-and-forget
+   `_extract_memories(session)` → MemoryManager reviews session log →
+   saves/deletes memories → observer triggers prompt rebuild for next
+   session.
 
 ---
 
@@ -404,10 +567,11 @@ Thin orchestrator. Its job is to:
 1. Create a `ToolRegistry` and attach a `ReplBridge`
 2. Run a `ModuleScanner` against `CAi.toolkit` to populate the registry
 3. Create a `UtilityRegistry` and inject utilities with monitoring (optional)
-4. Create a `SkillLoader` (optional)
-5. Initialize `BaseAgent` (LLM + LangGraph)
-6. Build a `PromptBuilder` with the four default sections
-7. Wire `registry.on_change` → auto-rebuild prompt
+4. Create a `MemoryStore` for cross-session memory (optional)
+5. Create a `SkillLoader` (optional)
+6. Initialize `BaseAgent` (LLM + LangGraph)
+7. Build a `PromptBuilder` with the five default sections
+8. Wire `registry.on_change` → auto-rebuild prompt
 
 All the public methods (`add_tool`, `remove_tool`, `list_tools`,
 `reload_tools`, `list_skills`, `reload_skills`) delegate to the
@@ -432,6 +596,7 @@ web_ui/
 │       ├── chat.py             # POST /api/chat, POST /api/chat/cancel, GET /api/health
 │       ├── conversations.py    # CRUD for /api/conversations
 │       ├── files.py            # Upload / list / download / delete + PDF export
+│       ├── memory.py           # CRUD + search + extract for /api/memory
 │       └── workspace.py        # DELETE /api/workspace, POST /api/reset
 ├── frontend/
 │   ├── index.html
@@ -447,6 +612,7 @@ app.py
   ├── routers/chat.py        → deps.py, chat_service.py
   ├── routers/conversations.py → deps.py
   ├── routers/files.py       → deps.py
+  ├── routers/memory.py      → deps.py
   └── routers/workspace.py   → deps.py
 
 deps.py
@@ -485,6 +651,15 @@ See `docs/web_ui_backend.md` for the full design rationale.
 | `DELETE` | `/api/utilities/detail/{name}` | Remove a utility from the library |
 | `GET` | `/api/utilities/traces` | Recent UtilityManager LLM call traces |
 | `GET` | `/api/utilities/traces/{filename}` | One trace (full prompt + response) |
+| `GET` | `/api/memory/` | List all memories (with category filter) |
+| `GET` | `/api/memory/search` | Search memories by keyword query |
+| `GET` | `/api/memory/{id}` | Get one memory detail |
+| `POST` | `/api/memory/` | Manually add a memory |
+| `PATCH` | `/api/memory/{id}` | Edit a memory |
+| `DELETE` | `/api/memory/{id}` | Delete a memory |
+| `POST` | `/api/memory/extract` | Manually trigger memory extraction |
+| `GET` | `/api/memory/traces` | Recent MemoryManager LLM call traces |
+| `GET` | `/api/memory/traces/{filename}` | One trace (full prompt + response) |
 | `GET` | `/api/health` | Health check |
 
 ### Chat flow
@@ -494,6 +669,7 @@ POST /api/chat
     │
     ├── Acquire _chat_lock (asyncio.Lock) — serialises concurrent requests
     ├── Load conversation history from ConversationStore
+    ├── Update memory context → MemorySection retrieves relevant memories
     ├── Build prompt (user message + workspace path + file refs)
     ├── Call agent.run_with_history_streaming(prompt, history)
     │       │
@@ -501,7 +677,9 @@ POST /api/chat
     │
     ├── Emit SSE events to frontend
     ├── Persist user + assistant messages to ConversationStore
-    └── Async task: flush utility usage → apply_usage → UtilityManager.maintain()
+    └── Async tasks:
+        ├── flush utility usage → apply_usage
+        └── MemoryManager.extract() — save relevant facts for future sessions
 ```
 
 ### SSE event types
@@ -545,12 +723,16 @@ LLM_BASE_URL=http://your-endpoint/v1/
 LLM_API_KEY=your_key
 LLM_TEMPERATURE=0.7
 
-# Curator LLM (UtilityManager) — optional, falls back to LLM_* when unset
+# Curator LLM (UtilityManager + MemoryManager) — optional, falls back to LLM_*
 CURATOR_MODEL=deepseek-v4-flash
 CURATOR_SOURCE=Custom
 CURATOR_BASE_URL=
 CURATOR_API_KEY=
 CURATOR_TEMPERATURE=0.2
+
+# Memory subsystem
+MEMORY_ENABLED=true               # enable/disable cross-session memory
+MEMORY_MAX_ENTRIES=100            # max memories before eviction kicks in
 
 # Network
 TOOL_SERVER_HOST=0.0.0.0
@@ -685,6 +867,11 @@ tests/
 ├── test_execution_bash.py      # Bash subprocess wrapper
 ├── test_execution_timeout.py   # run_with_timeout / pool safety
 ├── test_llm_factory.py         # LLM provider factory
+├── test_context_compression.py # ContextCompressor + hybrid partition + scoring
+├── test_memory_entry.py        # MemoryEntry serialization + replace
+├── test_memory_store.py        # MemoryStore CRUD, search, observer, dedup, eviction
+├── test_memory_section.py      # MemorySection prompt rendering
+├── test_memory_manager.py      # MemoryManager curator extraction (mock LLM)
 ├── test_web_concurrency.py     # SSE parsing + chat lock
 ├── test_pdf_export.py          # Conversation → Markdown → PDF
 ├── test_toolkit_client.py      # Tool server HTTP client
@@ -707,3 +894,10 @@ network, no API keys, no credentials required.
 - `apply_usage()` correctly increments file-header counters
 - UtilityManager.maintain() never raises — all errors are caught and logged
 - Kernel restart re-injects monitoring bootstrap and re-wraps utilities
+- ContextCompressor returns history unchanged when within budget (same object)
+- Compression fires only at user-message time, never during the agent's internal loop
+- MemoryStore dedup merges entries with Jaccard > 0.8 (tags union, importance max)
+- MemoryStore eviction removes lowest-importance + least-recently-accessed when over capacity
+- MemoryStore observer callbacks are fail-isolated (same as ToolRegistry/UtilityRegistry)
+- MemoryManager.extract() never raises — all errors caught and logged
+- MemorySection renders empty string when no memories match (auto-dropped by PromptBuilder)

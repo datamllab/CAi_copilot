@@ -58,6 +58,34 @@ async def _flush_usage_only(session: AgentSession) -> None:
         logger.warning("Utility usage flush failed: %s", e)
 
 
+async def _extract_memories(session: AgentSession) -> None:
+    """Run memory extraction as a fire-and-forget background task.
+
+    Uses the MemoryManager curator to analyze the session log and
+    save relevant facts for future sessions.
+    """
+    try:
+        agent = session.agent
+        store = getattr(agent, "memory_store", None)
+        if store is None:
+            return
+
+        log = session.last_session_log
+        session_log = log.get("log", [])
+        user_message = log.get("user_message", "")
+        if not session_log:
+            return
+
+        from CAi.CAi_agent.memory import MemoryManager
+
+        llm = getattr(agent, "curator_llm", None)
+        manager = MemoryManager(store, llm=llm)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, manager.extract, session_log, user_message)
+    except Exception as e:
+        logger.warning("Memory extraction failed: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Chat endpoint
 # ---------------------------------------------------------------------------
@@ -120,6 +148,11 @@ async def chat(
                             history.append({"role": m["role"], "content": m["content"]})
 
                 agent_prompt = build_prompt(request.message, request.file_refs, workspace_dir)
+
+                # Update memory context so MemorySection retrieves relevant memories
+                if hasattr(session_agent, "update_memory_context"):
+                    session_agent.update_memory_context(request.message)
+
                 last_full_message = ""
 
                 cancel_ev = asyncio.Event()
@@ -185,6 +218,9 @@ async def chat(
 
                 # Fire-and-forget: flush utility usage from this session's kernel.
                 asyncio.ensure_future(_flush_usage_only(session))
+                # Fire-and-forget: extract memories from this session.
+                if has_executions:
+                    asyncio.ensure_future(_extract_memories(session))
 
             except Exception as e:
                 logger.exception("Chat stream error")

@@ -60,6 +60,10 @@ class A1pro(BaseAgent):
         # Utilities
         auto_load_utilities: bool = True,
         utilities_dir: str | None = None,
+        # Memory
+        auto_load_memory: bool = True,
+        memory_dir: str | None = None,
+        max_memories: int = 100,
         # Curator LLM (UtilityManager) — overrides CURATOR_* env vars
         curator_llm: str | None = None,
         curator_source: str | None = None,
@@ -101,6 +105,15 @@ class A1pro(BaseAgent):
             # (UtilityManager save/update/delete, Web UI delete, etc.).
             self.utility_registry.on_change(self._on_utilities_changed)
 
+        # -------- Memory subsystem -------------------------------------
+        self.memory_store = None
+        self._memory_section = None
+        if auto_load_memory:
+            from CAi.CAi_agent.memory import MemoryStore
+
+            mem_dir = Path(memory_dir) if memory_dir else Path("agent_workspace/_memory")
+            self.memory_store = MemoryStore(mem_dir, max_memories=max_memories)
+
         # -------- Base agent (builds LLM + workflow) -------------------
         super().__init__(
             llm=llm,
@@ -130,6 +143,11 @@ class A1pro(BaseAgent):
         # Section order matters: Utilities go BEFORE Tools so the agent
         # is steered to prefer high-level helpers over raw tool calls.
         builder = PromptBuilder().add(CoreSection())
+        if self.memory_store:
+            from CAi.CAi_agent.memory import MemorySection
+
+            self._memory_section = MemorySection(self.memory_store)
+            builder.add(self._memory_section)
         if self.utility_registry:
             from CAi.CAi_agent.utilities import UtilitiesSection
 
@@ -140,13 +158,17 @@ class A1pro(BaseAgent):
 
         # Registry → prompt: auto-rebuild whenever tools change.
         self.tool_registry.on_change(self._rebuild_prompt)
+        # Memory → prompt: auto-rebuild whenever memories change.
+        if self.memory_store:
+            self.memory_store.on_change(self._rebuild_prompt)
         self._rebuild_prompt()
 
         logger.info(
-            "A1pro ready — %d tools, %d skills, %d utilities",
+            "A1pro ready — %d tools, %d skills, %d utilities, %d memories",
             len(self.tool_registry),
             len(self.list_skills()),
             len(self.utility_registry) if self.utility_registry else 0,
+            len(self.memory_store) if self.memory_store else 0,
         )
 
     # ------------------------------------------------------------------
@@ -155,6 +177,16 @@ class A1pro(BaseAgent):
 
     def _rebuild_prompt(self) -> None:
         self.system_prompt = self.prompt_builder.build()
+
+    def update_memory_context(self, user_message: str) -> None:
+        """Update the memory section's search context for the next prompt.
+
+        Called once per user message so the MemorySection retrieves the
+        most relevant memories for the current topic.
+        """
+        if self._memory_section is not None:
+            self._memory_section.set_context(user_message)
+            self._rebuild_prompt()
 
     # ------------------------------------------------------------------
     # Utility lifecycle
