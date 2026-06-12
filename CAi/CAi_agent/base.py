@@ -29,7 +29,7 @@ from .agent_tags import (
     iter_execute_blocks,
     wrap_observation,
 )
-from .context_compression import hybrid_compress
+from .compression import ContextCompressor
 from .execution import (
     inject_custom_functions,
     run_bash_script,
@@ -70,16 +70,23 @@ class BaseAgent:
         system_prompt: str | None = None,
         max_history_pairs: int = _DEFAULT_MAX_HISTORY_PAIRS,
         context_compress_hook: Callable[[list[dict]], list[dict]] | None = None,
+        # Pre-built compressor — takes precedence over the two params above.
+        compressor: ContextCompressor | None = None,
         # Optional per-session kernel — when set, code runs in that kernel
         # instead of the process-wide default. See ``KernelSession``.
         kernel_session=None,
     ):
         self.timeout_seconds = timeout_seconds
         self._system_prompt = system_prompt or self._default_system_prompt()
-        self.max_history_pairs = max_history_pairs
-        # Hook to override the default hybrid_compress strategy.
-        # Signature: (history: list[dict]) -> list[dict]
-        self._context_compress_hook = context_compress_hook
+
+        # Context compression — build or accept the compressor.
+        if compressor is not None:
+            self._compressor = compressor
+        else:
+            self._compressor = ContextCompressor(
+                max_pairs=max_history_pairs,
+                custom_hook=context_compress_hook,
+            )
         # Per-session kernel (None → uses the default global kernel).
         self._kernel_session = kernel_session
 
@@ -99,6 +106,16 @@ class BaseAgent:
         # Serialise code execution — the REPL shares builtins across calls.
         self._exec_lock = Lock()
 
+    def shutdown(self) -> None:
+        """Shut down the per-session kernel (if any). Safe to call multiple times."""
+        session = self._kernel_session
+        if session is not None:
+            try:
+                session.shutdown()
+            except Exception:
+                pass
+            self._kernel_session = None
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -110,6 +127,26 @@ class BaseAgent:
     @system_prompt.setter
     def system_prompt(self, value: str):
         self._system_prompt = value
+
+    # Backward-compatibility aliases that delegate to the ContextCompressor.
+    # Existing code that does ``agent.max_history_pairs = 5`` or
+    # ``agent._context_compress_hook = fn`` continues to work.
+
+    @property
+    def max_history_pairs(self) -> int:
+        return self._compressor.max_pairs
+
+    @max_history_pairs.setter
+    def max_history_pairs(self, value: int) -> None:
+        self._compressor.max_pairs = value
+
+    @property
+    def _context_compress_hook(self):
+        return self._compressor._custom_hook
+
+    @_context_compress_hook.setter
+    def _context_compress_hook(self, value) -> None:
+        self._compressor._custom_hook = value
 
     # ------------------------------------------------------------------
     # System prompt
@@ -231,9 +268,11 @@ RULES:
     def _build_messages(self, prompt: str, history: list[dict]) -> list[BaseMessage]:
         """Convert caller-supplied history + new prompt into LangChain messages.
 
-        If history exceeds `max_history_pairs` messages, the older portion is
-        either compressed via `_context_compress_hook` (if set) or simply
-        truncated with a short notice so the LLM knows context was trimmed.
+        .. important::
+            Compression happens HERE, exactly once, before the agent loop starts.
+            The generate→execute→generate loop below appends to the ``messages``
+            list directly and MUST NOT re-invoke compression — mid-loop compression
+            would discard observations the agent is actively reasoning about.
         """
         history = self._maybe_compress_history(history)
 
@@ -251,18 +290,8 @@ RULES:
         return messages
 
     def _maybe_compress_history(self, history: list[dict]) -> list[dict]:
-        """Compress history via hook (if set) or the default hybrid_compress."""
-        max_msgs = self.max_history_pairs * 2
-        if len(history) <= max_msgs:
-            return history
-
-        if self._context_compress_hook is not None:
-            try:
-                return self._context_compress_hook(history)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Context compress hook failed: %s; falling back to hybrid_compress", e)
-
-        return hybrid_compress(history, max_pairs=self.max_history_pairs)
+        """Delegate to the ContextCompressor — all decision logic lives there."""
+        return self._compressor.compress(history)
 
     def _invoke_llm_full(self, messages: list[BaseMessage]) -> str:
         """Blocking LLM call — returns full response as a string."""
