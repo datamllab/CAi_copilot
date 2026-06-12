@@ -72,7 +72,11 @@ export function escapeHtml(str) {
 
 export function renderMarkdown(text) {
     try {
-        return marked.parse(text);
+        const rawHtml = marked.parse(text);
+        if (typeof DOMPurify !== "undefined" && DOMPurify?.sanitize) {
+            return DOMPurify.sanitize(rawHtml);
+        }
+        return rawHtml;
     } catch {
         return escapeHtml(text).replace(/\n/g, "<br>");
     }
@@ -180,4 +184,37 @@ export function updateSendBtnState() {
             && state.attachedFiles.length === 0
             && state.referencedFiles.length === 0;
     }
+}
+
+// ========== Draft Autosave ==========
+
+const _DRAFT_KEY = (convId) => `cai_draft_${convId || "new"}`;
+const _DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+export function saveDraft(convId, text) {
+    const key = _DRAFT_KEY(convId);
+    if (!text || !text.trim()) {
+        localStorage.removeItem(key);
+        return;
+    }
+    localStorage.setItem(key, JSON.stringify({ text, timestamp: Date.now() }));
+}
+
+export function loadDraft(convId) {
+    try {
+        const raw = localStorage.getItem(_DRAFT_KEY(convId));
+        if (!raw) return null;
+        const data = JSON.parse(raw);
+        if (Date.now() - data.timestamp > _DRAFT_TTL_MS) {
+            localStorage.removeItem(_DRAFT_KEY(convId));
+            return null;
+        }
+        return data.text;
+    } catch {
+        return null;
+    }
+}
+
+export function clearDraft(convId) {
+    localStorage.removeItem(_DRAFT_KEY(convId));
 }

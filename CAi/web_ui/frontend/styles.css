@@ -1481,252 +1481,27 @@ body {
     box-shadow: var(--shadow-sm);
 }
 
-/* ========== Utility Maintenance Popup ========== */
-.maintenance-popup {
-    position: fixed;
-    bottom: 80px;
-    right: 24px;
-    z-index: 900;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-lg);
-    padding: 14px 18px;
-    max-width: 360px;
-    animation: maintenanceSlideUp 0.3s ease;
-}
-
-@keyframes maintenanceSlideUp {
-    from {
-        opacity: 0;
-        transform: translateY(12px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-.maintenance-popup-content {
+.regenerate-btn {
+    width: 24px;
+    height: 24px;
+    padding: 0;
     display: flex;
     align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-}
-
-.maintenance-popup-icon {
-    font-size: 1.3rem;
-    flex-shrink: 0;
-}
-
-.maintenance-popup-text {
-    font-size: 0.82rem;
-    color: var(--text-primary);
-    flex: 1;
-    min-width: 120px;
-}
-
-.maintenance-popup-actions {
-    display: flex;
-    gap: 6px;
-    width: 100%;
-    margin-top: 10px;
-}
-
-.btn-maintenance {
-    flex: 1;
-    padding: 6px 10px;
-    font-size: 0.75rem;
-    font-weight: 500;
-    border-radius: var(--radius-xs);
+    justify-content: center;
+    background: transparent;
     border: 1px solid var(--border-color);
+    border-radius: var(--radius-xs);
+    color: var(--text-muted);
     cursor: pointer;
+    font-size: 0.75rem;
     transition: all 0.15s ease;
-    text-align: center;
+    margin-right: 4px;
 }
 
-.btn-maintenance-preview {
-    background: var(--accent-soft);
-    color: var(--accent);
-    border-color: var(--accent);
-}
-
-.btn-maintenance-preview:hover {
-    background: var(--accent);
-    color: white;
-}
-
-.btn-maintenance-execute {
-    background: rgba(34, 197, 94, 0.1);
-    color: var(--success);
-    border-color: var(--success);
-}
-
-.btn-maintenance-execute:hover {
-    background: var(--success);
-    color: white;
-}
-
-.btn-maintenance-skip {
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    border-color: var(--border-color);
-}
-
-.btn-maintenance-skip:hover {
+.regenerate-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
-}
-
-.maintenance-popup-result {
-    margin-top: 10px;
-    padding: 10px 12px;
-    background: var(--bg-tertiary);
-    border-radius: var(--radius-xs);
-    font-size: 0.78rem;
-    color: var(--text-secondary);
-    max-height: 150px;
-    overflow-y: auto;
-}
-
-.maintenance-popup-result .result-item {
-    padding: 3px 0;
-}
-
-.maintenance-popup-result .result-save {
-    color: var(--success);
-}
-
-.maintenance-popup-result .result-update {
-    color: var(--warning);
-}
-
-.maintenance-popup-result .result-delete {
-    color: var(--danger);
-}
-
-.maintenance-popup.loading .maintenance-popup-actions .btn-maintenance {
-    opacity: 0.5;
-    pointer-events: none;
-}
-
-/* ========== Utility Maintenance Popup ========== */
-.maintenance-popup {
-    position: fixed;
-    bottom: 100px;
-    right: 24px;
-    z-index: 1000;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-lg);
-    padding: 16px;
-    min-width: 280px;
-    max-width: 380px;
-    animation: slideUp 0.3s ease-out;
-}
-
-@keyframes slideUp {
-    from {
-        opacity: 0;
-        transform: translateY(12px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-.maintenance-popup-content {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.maintenance-popup-icon {
-    font-size: 1.4rem;
-}
-
-.maintenance-popup-text {
-    font-size: 0.85rem;
-    color: var(--text-primary);
-    line-height: 1.4;
-}
-
-.maintenance-popup-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 4px;
-}
-
-.btn-maintenance {
-    font-size: 0.75rem;
-    padding: 5px 12px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border-color);
-    cursor: pointer;
-    transition: all 0.15s ease;
-}
-
-.btn-maintenance-preview {
-    background: var(--accent-soft);
-    color: var(--accent);
-    border-color: var(--accent);
-}
-
-.btn-maintenance-preview:hover {
-    background: var(--accent);
-    color: white;
-}
-
-.btn-maintenance-execute {
-    background: rgba(34, 197, 94, 0.1);
-    color: var(--success);
-    border-color: var(--success);
-}
-
-.btn-maintenance-execute:hover {
-    background: var(--success);
-    color: white;
-}
-
-.btn-maintenance-skip {
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-}
-
-.btn-maintenance-skip:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-}
-
-.maintenance-popup.loading .maintenance-popup-actions {
-    opacity: 0.5;
-    pointer-events: none;
-}
-
-.maintenance-popup-result {
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border-color);
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-}
-
-.maintenance-popup-result .result-item {
-    padding: 4px 0;
-}
-
-.maintenance-popup-result .result-save {
-    color: var(--success);
-}
-
-.maintenance-popup-result .result-update {
-    color: var(--warning);
-}
-
-.maintenance-popup-result .result-delete {
-    color: var(--danger);
+    border-color: var(--text-muted);
 }
 
 /* ========== Code Execution Time Badge ========== */

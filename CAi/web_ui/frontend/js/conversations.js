@@ -3,9 +3,9 @@
  */
 import {
     state, dom,
-    escapeHtml, formatDate, showToast,
+    escapeHtml, formatDate, showToast, loadDraft,
 } from "./state.js?v=7";
-import { addMessage, updateAIMessage } from "./chat.js?v=7";
+import { addMessage, updateAIMessage, renderStreamingMessage } from "./chat.js?v=7";
 
 // ========== Load & Render ==========
 
@@ -88,9 +88,27 @@ export async function selectConversation(convId) {
                     addMessage("user", msg.content);
                 } else if (msg.role === "assistant") {
                     const aiEl = addMessage("assistant", "", false);
-                    updateAIMessage(aiEl, { solution: msg.content });
+                    const content = msg.content || "";
+                    if (content.includes("<execute") || content.includes("<observation")) {
+                        renderStreamingMessage(aiEl, content, false);
+                    } else {
+                        updateAIMessage(aiEl, { solution: content });
+                    }
                 }
             }
+        }
+
+        // Restore draft for this conversation
+        const draft = loadDraft(convId);
+        if (draft && dom.messageInput) {
+            dom.messageInput.value = draft;
+            dom.messageInput.style.height = "auto";
+            dom.messageInput.style.height = Math.min(dom.messageInput.scrollHeight, 200) + "px";
+            updateSendBtnState();
+        } else if (dom.messageInput) {
+            dom.messageInput.value = "";
+            dom.messageInput.style.height = "auto";
+            updateSendBtnState();
         }
     } catch (e) {
         showToast("无法加载会话: " + e.message, "error");

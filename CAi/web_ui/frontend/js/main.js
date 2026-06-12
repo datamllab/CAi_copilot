@@ -2,7 +2,7 @@
  * Application entry point.
  * Initializes DOM refs, binds events, and kicks off data loading.
  */
-import { $, state, dom, initDomRefs, safeCreateIcons, initTheme, toggleTheme, updateSendBtnState } from "./state.js?v=7";
+import { $, state, dom, initDomRefs, safeCreateIcons, initTheme, toggleTheme, updateSendBtnState, saveDraft, loadDraft } from "./state.js?v=7";
 import { sendMessage, cancelGeneration } from "./chat.js?v=7";
 import { loadFiles, handleSidebarUpload, handleChatFileAttach, exportPdf, clearFiles, closeAllModals } from "./files.js?v=7";
 import { loadConversations, startNewConversation } from "./conversations.js?v=7";
@@ -35,6 +35,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     loadFiles();
     loadUtilities();
     await loadConversations();
+    restoreDraft();
 });
 
 // ========== Event Binding ==========
@@ -55,10 +56,13 @@ function setupEventListeners() {
         }
     });
 
+    let _draftTimer = null;
     dom.messageInput.addEventListener("input", () => {
         dom.messageInput.style.height = "auto";
         dom.messageInput.style.height = Math.min(dom.messageInput.scrollHeight, 200) + "px";
         updateSendBtnState();
+        clearTimeout(_draftTimer);
+        _draftTimer = setTimeout(() => saveDraft(state.currentConvId, dom.messageInput.value), 300);
     });
 
     dom.fileUploadInput.addEventListener("change", handleSidebarUpload);
@@ -145,4 +149,16 @@ window.setPrompt = function (text) {
     dom.sendBtn.disabled = false;
     dom.messageInput.style.height = "auto";
     dom.messageInput.style.height = dom.messageInput.scrollHeight + "px";
+    saveDraft(state.currentConvId, text);
 };
+
+// ========== Draft Restore ==========
+function restoreDraft() {
+    const draft = loadDraft(state.currentConvId);
+    if (draft && dom.messageInput) {
+        dom.messageInput.value = draft;
+        dom.messageInput.style.height = "auto";
+        dom.messageInput.style.height = Math.min(dom.messageInput.scrollHeight, 200) + "px";
+        updateSendBtnState();
+    }
+}

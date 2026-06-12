@@ -4,7 +4,7 @@
 import {
     state, dom,
     escapeHtml, renderMarkdown, safeHighlight, scrollToBottom, showToast,
-    updateSendBtnState,
+    updateSendBtnState, clearDraft,
 } from "./state.js?v=7";
 import { loadFiles } from "./files.js?v=7";
 import { loadConversations } from "./conversations.js?v=7";
@@ -47,7 +47,9 @@ function getPlainText(rawContent) {
         .join("\n\n");
 }
 
-// ========== Cancel ==========
+// ========== Cancel / Interrupt tracking ==========
+
+let _wasInterrupted = false;
 
 export async function cancelGeneration() {
     if (!state.isStreaming) return;
@@ -57,6 +59,7 @@ export async function cancelGeneration() {
             : "/api/chat/cancel";
         await fetch(url, { method: "POST" });
     } catch (_) { /* best effort */ }
+    _wasInterrupted = true;
     state.isStreaming = false;
     updateSendBtnState();
     showToast("已停止生成", "info");
@@ -99,16 +102,18 @@ export async function sendMessage() {
         }
     }
 
-    // Clear input
+    // Clear input and draft
     dom.messageInput.value = "";
     dom.messageInput.style.height = "auto";
     dom.sendBtn.disabled = true;
+    clearDraft(state.currentConvId);
     state.attachedFiles = [];
     state.referencedFiles = [];
     dom.attachedFilesEl.innerHTML = "";
 
     // Stream response
     state.isStreaming = true;
+    _wasInterrupted = false;
     updateSendBtnState();
     const aiMsgEl = addMessage("assistant", "", true);
 
@@ -126,91 +131,168 @@ export async function sendMessage() {
             }),
         });
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let streamDone = false;
-
-        const handleEvent = (event) => {
-            switch (event.type) {
-                case "conversation_id":
+        ({ fullContent, currentTurnText } = await _consumeStream(
+            response, aiMsgEl, (event) => {
+                if (event.type === "conversation_id") {
                     state.currentConvId = event.content;
-                    break;
-                case "token":
-                    currentTurnText += event.content;
-                    fullContent += event.content;
-                    renderStreamingMessage(aiMsgEl, fullContent, true);
-                    break;
-                case "message_end": {
-                    const beforeTurn = fullContent.slice(0, fullContent.length - currentTurnText.length);
-                    fullContent = beforeTurn + event.content;
-                    currentTurnText = "";
-                    renderStreamingMessage(aiMsgEl, fullContent, true);
-                    break;
                 }
-                case "observation":
-                    fullContent += "\n" + event.content;
-                    currentTurnText = "";
-                    renderStreamingMessage(aiMsgEl, fullContent, true);
-                    break;
-                case "solution":
-                    if (!fullContent.trim()) {
-                        fullContent = event.content;
-                        renderStreamingMessage(aiMsgEl, fullContent, true);
-                    }
-                    break;
-                case "error":
-                    fullContent += `\n\n❌ 错误: ${event.content}`;
-                    renderStreamingMessage(aiMsgEl, fullContent, true);
-                    break;
-                case "done":
-                    streamDone = true;
-                    break;
-                case "maintenance_pending":
-                    showMaintenancePopup();
-                    break;
             }
-        };
-
-        while (!streamDone) {
-            const { done, value } = await reader.read();
-            if (done) {
-                if (buffer.trim()) {
-                    for (const line of buffer.split("\n")) {
-                        if (!line.startsWith("data: ")) continue;
-                        const j = line.slice(6).trim();
-                        if (!j) continue;
-                        try { handleEvent(JSON.parse(j)); } catch (_) { /* skip */ }
-                    }
-                }
-                break;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-                if (!line.startsWith("data: ")) continue;
-                const j = line.slice(6).trim();
-                if (!j) continue;
-                try { handleEvent(JSON.parse(j)); } catch (_) { /* skip */ }
-                if (streamDone) break;
-            }
-        }
-
-        renderStreamingMessage(aiMsgEl, fullContent || "(无响应)", false);
-
+        ));
     } catch (e) {
         renderStreamingMessage(aiMsgEl, `❌ 请求失败: ${e.message}`, false);
     } finally {
         state.isStreaming = false;
-        // Final render with streaming=false to ensure dots are removed
         renderStreamingMessage(aiMsgEl, fullContent || "(无响应)", false);
         updateSendBtnState();
+        _showRegenerateButton();
         loadFiles();
         loadConversations();
         loadUtilities();
+    }
+}
+
+// ========== Stream Consumption (shared by sendMessage and regenerate) ==========
+
+async function _consumeStream(response, aiMsgEl, onEventExtra = null) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let streamDone = false;
+    let fullContent = "";
+    let currentTurnText = "";
+
+    const handleEvent = (event) => {
+        if (onEventExtra) onEventExtra(event);
+        switch (event.type) {
+            case "token":
+                currentTurnText += event.content;
+                fullContent += event.content;
+                renderStreamingMessage(aiMsgEl, fullContent, true);
+                break;
+            case "message_end": {
+                const beforeTurn = fullContent.slice(0, fullContent.length - currentTurnText.length);
+                fullContent = beforeTurn + event.content;
+                currentTurnText = "";
+                renderStreamingMessage(aiMsgEl, fullContent, true);
+                break;
+            }
+            case "observation":
+                fullContent += "\n" + event.content;
+                currentTurnText = "";
+                renderStreamingMessage(aiMsgEl, fullContent, true);
+                break;
+            case "solution":
+                if (!fullContent.trim()) {
+                    fullContent = event.content;
+                    renderStreamingMessage(aiMsgEl, fullContent, true);
+                }
+                break;
+            case "error":
+                fullContent += `\n\n❌ 错误: ${event.content}`;
+                renderStreamingMessage(aiMsgEl, fullContent, true);
+                break;
+            case "done":
+                streamDone = true;
+                break;
+        }
+    };
+
+    while (!streamDone) {
+        const { done, value } = await reader.read();
+        if (done) {
+            if (buffer.trim()) {
+                for (const line of buffer.split("\n")) {
+                    if (!line.startsWith("data: ")) continue;
+                    const j = line.slice(6).trim();
+                    if (!j) continue;
+                    try { handleEvent(JSON.parse(j)); } catch (_) { /* skip */ }
+                }
+            }
+            break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const j = line.slice(6).trim();
+            if (!j) continue;
+            try { handleEvent(JSON.parse(j)); } catch (_) { /* skip */ }
+            if (streamDone) break;
+        }
+    }
+
+    renderStreamingMessage(aiMsgEl, fullContent || "(无响应)", false);
+    return { fullContent, currentTurnText };
+}
+
+// ========== Regenerate ==========
+
+export async function regenerateMessage(msgEl) {
+    if (state.isStreaming) {
+        showToast("请等待当前生成完成", "info");
+        return;
+    }
+
+    // Remove this message and everything after it from the DOM
+    let sibling = msgEl.nextElementSibling;
+    while (sibling) {
+        const toRemove = sibling;
+        sibling = sibling.nextElementSibling;
+        toRemove.remove();
+    }
+    msgEl.remove();
+
+    state.isStreaming = true;
+    updateSendBtnState();
+    const aiMsgEl = addMessage("assistant", "", true);
+
+    let fullContent = "";
+    let currentTurnText = "";
+
+    try {
+        const response = await fetch("/api/chat/regenerate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ conversation_id: state.currentConvId }),
+        });
+
+        ({ fullContent, currentTurnText } = await _consumeStream(response, aiMsgEl));
+    } catch (e) {
+        renderStreamingMessage(aiMsgEl, `❌ 请求失败: ${e.message}`, false);
+    } finally {
+        state.isStreaming = false;
+        renderStreamingMessage(aiMsgEl, fullContent || "(无响应)", false);
+        updateSendBtnState();
+        _showRegenerateButton();
+        loadFiles();
+        loadConversations();
+        loadUtilities();
+    }
+}
+
+function _showRegenerateButton() {
+    // Hide all regenerate buttons
+    dom.messagesEl.querySelectorAll(".regenerate-btn").forEach((btn) => {
+        btn.style.display = "none";
+    });
+    // Show only on the last assistant message
+    const msgs = dom.messagesEl.querySelectorAll(".message-assistant");
+    if (msgs.length > 0) {
+        const last = msgs[msgs.length - 1];
+        const btn = last.querySelector(".regenerate-btn");
+        if (btn) {
+            btn.style.display = "";
+            if (_wasInterrupted) {
+                btn.textContent = "⏵";
+                btn.title = "继续生成";
+            } else {
+                btn.textContent = "🔄";
+                btn.title = "重新生成";
+            }
+        }
     }
 }
 
@@ -243,15 +325,18 @@ export function addMessage(role, content, isStreaming = false) {
                 ${isStreaming ? '<div class="streaming-indicator"><span class="streaming-dot"></span><span class="streaming-dot"></span><span class="streaming-dot"></span></div>' : ""}
             </div>
             <div class="message-actions">
+                <button class="regenerate-btn" title="重新生成" style="display:none">🔄</button>
                 <button class="copy-btn" title="复制消息">${COPY_ICON}</button>
             </div>
         `;
-        const btn = msgEl.querySelector(".copy-btn");
-        btn.addEventListener("click", () => {
+        const copyBtn = msgEl.querySelector(".copy-btn");
+        copyBtn.addEventListener("click", () => {
             const raw = msgEl.dataset.content || "";
             const text = raw ? getPlainText(raw) : msgEl.querySelector(".message-body")?.innerText || "";
-            copyText(text).then(() => flashCopied(btn)).catch(() => {});
+            copyText(text).then(() => flashCopied(copyBtn)).catch(() => {});
         });
+        const regenBtn = msgEl.querySelector(".regenerate-btn");
+        regenBtn.addEventListener("click", () => regenerateMessage(msgEl));
     }
 
     dom.messagesEl.appendChild(msgEl);
@@ -560,94 +645,3 @@ function buildCollapsible(title, content, _type, defaultOpen = false, isRaw = fa
     `;
 }
 
-
-// ========== Utility Maintenance Popup ==========
-
-let maintenanceAutoHideTimer = null;
-
-function showMaintenancePopup() {
-    const popup = document.getElementById("maintenancePopup");
-    const resultEl = document.getElementById("maintenanceResult");
-    if (!popup) return;
-
-    // Reset state
-    popup.style.display = "block";
-    popup.classList.remove("loading");
-    resultEl.style.display = "none";
-    resultEl.innerHTML = "";
-
-    // Auto-hide after 30s if no action taken
-    clearTimeout(maintenanceAutoHideTimer);
-    maintenanceAutoHideTimer = setTimeout(() => hideMaintenancePopup(), 30000);
-}
-
-function hideMaintenancePopup() {
-    const popup = document.getElementById("maintenancePopup");
-    if (popup) popup.style.display = "none";
-    clearTimeout(maintenanceAutoHideTimer);
-}
-
-async function handleMaintenanceAction(mode) {
-    const popup = document.getElementById("maintenancePopup");
-    const resultEl = document.getElementById("maintenanceResult");
-    if (!popup) return;
-
-    clearTimeout(maintenanceAutoHideTimer);
-    popup.classList.add("loading");
-    resultEl.style.display = "block";
-    resultEl.innerHTML = "⏳ 正在分析...";
-
-    try {
-        const res = await fetch("/api/utilities/maintain", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ skip_cooldown: true, mode }),
-        });
-        const data = await res.json();
-
-        popup.classList.remove("loading");
-
-        if (mode === "preview") {
-            if (data.preview && data.preview.length > 0) {
-                resultEl.innerHTML = data.preview.map(a => {
-                    const cls = `result-${a.type}`;
-                    const icon = a.type === "save" ? "💾" : a.type === "update" ? "🔄" : "🗑️";
-                    return `<div class="result-item ${cls}">${icon} ${a.type}: <strong>${a.name}</strong>${a.description ? " — " + a.description : ""}</div>`;
-                }).join("");
-            } else {
-                resultEl.innerHTML = "✅ 无需变更";
-                setTimeout(() => hideMaintenancePopup(), 3000);
-            }
-        } else {
-            // execute mode
-            const parts = [];
-            if (data.saved?.length) parts.push(`💾 保存: ${data.saved.join(", ")}`);
-            if (data.updated?.length) parts.push(`🔄 更新: ${data.updated.join(", ")}`);
-            if (data.deleted?.length) parts.push(`🗑️ 删除: ${data.deleted.join(", ")}`);
-            if (data.rejected?.length) parts.push(`⚠ 拒绝: ${data.rejected.join("; ")}`);
-
-            if (parts.length > 0) {
-                resultEl.innerHTML = parts.map(p => `<div class="result-item">${p}</div>`).join("");
-                showToast("工具库已更新", "success");
-            } else {
-                resultEl.innerHTML = "✅ 无需变更";
-            }
-            setTimeout(() => hideMaintenancePopup(), 5000);
-        }
-    } catch (e) {
-        popup.classList.remove("loading");
-        resultEl.innerHTML = `❌ 失败: ${e.message}`;
-        setTimeout(() => hideMaintenancePopup(), 5000);
-    }
-}
-
-// Wire up buttons on DOM ready
-document.addEventListener("DOMContentLoaded", () => {
-    const previewBtn = document.getElementById("maintenancePreviewBtn");
-    const executeBtn = document.getElementById("maintenanceExecuteBtn");
-    const skipBtn = document.getElementById("maintenanceSkipBtn");
-
-    if (previewBtn) previewBtn.addEventListener("click", () => handleMaintenanceAction("preview"));
-    if (executeBtn) executeBtn.addEventListener("click", () => handleMaintenanceAction("execute"));
-    if (skipBtn) skipBtn.addEventListener("click", () => hideMaintenancePopup());
-});

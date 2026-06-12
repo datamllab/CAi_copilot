@@ -11,6 +11,8 @@
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <!-- Markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- XSS sanitizer for rendered markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
     <!-- Code highlighting (loaded dynamically based on theme) -->
     <link rel="stylesheet" id="hljs-theme" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -212,26 +214,6 @@
                 <p class="input-hint">CAi 可能会产生不准确的信息，请验证重要结果</p>
             </div>
         </main>
-    </div>
-
-    <!-- Utility Maintenance Popup -->
-    <div class="maintenance-popup" id="maintenancePopup" style="display:none;">
-        <div class="maintenance-popup-content">
-            <div class="maintenance-popup-icon">🔧</div>
-            <div class="maintenance-popup-text">检测到代码执行，是否整理工具库？</div>
-            <div class="maintenance-popup-actions">
-                <button class="btn btn-sm btn-maintenance btn-maintenance-preview" id="maintenancePreviewBtn" title="先看看会做什么">
-                    询问
-                </button>
-                <button class="btn btn-sm btn-maintenance btn-maintenance-execute" id="maintenanceExecuteBtn" title="直接执行整理">
-                    执行
-                </button>
-                <button class="btn btn-sm btn-maintenance btn-maintenance-skip" id="maintenanceSkipBtn" title="跳过本次">
-                    跳过
-                </button>
-            </div>
-        </div>
-        <div class="maintenance-popup-result" id="maintenanceResult" style="display:none;"></div>
     </div>
 
     <script type="module" src="/static/js/main.js?v=7"></script>

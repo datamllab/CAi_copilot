@@ -24,6 +24,7 @@ from ..deps import (
     get_store,
     get_workspace_dir,
 )
+from CAi.config import AUTO_MAINTAIN
 
 logger = get_logger("CAi.web_ui.chat")
 
@@ -86,6 +87,33 @@ async def _extract_memories(session: AgentSession) -> None:
         logger.warning("Memory extraction failed: %s", e)
 
 
+async def _auto_maintain(session: AgentSession) -> None:
+    """Run utility maintenance automatically without UI prompt."""
+    try:
+        agent = session.agent
+        registry = getattr(agent, "utility_registry", None)
+        if registry is None:
+            return
+
+        log = session.last_session_log
+        session_log = log.get("log", [])
+        user_message = log.get("user_message", "")
+        if not session_log:
+            return
+
+        from CAi.CAi_agent.utilities import UtilityManager
+
+        manager = UtilityManager(registry, llm=agent.curator_llm)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, manager.maintain, session_log, user_message
+        )
+        if any(result.get(k) for k in ("saved", "updated", "deleted")):
+            logger.info("Auto-maintain: %s", result)
+    except Exception as e:
+        logger.warning("Auto-maintain failed: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Chat endpoint
 # ---------------------------------------------------------------------------
@@ -102,6 +130,97 @@ async def health(agent=Depends(get_agent_optional)):
     return {"status": "ok", "agent_loaded": agent is not None}
 
 
+async def _chat_event_stream(
+    session,
+    conv_id: str,
+    prompt: str,
+    file_refs: list[str],
+    history: list[dict],
+    workspace_dir: str,
+    cancel_events: dict,
+    store: ConversationStore,
+):
+    """Shared SSE stream logic used by both /chat and /chat/regenerate."""
+    session_agent = session.agent
+    raw_session_log: list[dict] = []
+
+    try:
+        yield f"data: {json.dumps({'type': 'conversation_id', 'content': conv_id})}\n\n"
+
+        agent_prompt = build_prompt(prompt, file_refs, workspace_dir)
+
+        if hasattr(session_agent, "update_memory_context"):
+            session_agent.update_memory_context(prompt)
+
+        last_full_message = ""
+        cancel_ev = asyncio.Event()
+        cancel_events[conv_id] = cancel_ev
+        full_trace_parts: list[str] = []
+
+        try:
+            async for step in async_iter_agent(session_agent, agent_prompt, history, cancel_ev):
+                ev_type = step.get("type")
+                ev_content = step.get("content", "")
+
+                if ev_type == "token":
+                    yield f"data: {json.dumps({'type': 'token', 'content': ev_content}, ensure_ascii=False)}\n\n"
+                elif ev_type == "message_end":
+                    last_full_message = ev_content
+                    full_trace_parts.append(ev_content)
+                    raw_session_log.append({"type": "message_end", "content": ev_content})
+                    yield f"data: {json.dumps({'type': 'message_end', 'content': ev_content}, ensure_ascii=False)}\n\n"
+                elif ev_type == "observation":
+                    full_trace_parts.append(ev_content)
+                    raw_session_log.append({"type": "observation", "content": ev_content})
+                    yield f"data: {json.dumps({'type': 'observation', 'content': ev_content}, ensure_ascii=False)}\n\n"
+        finally:
+            cancel_events.pop(conv_id, None)
+
+        full_trace = "\n".join(full_trace_parts).strip() or last_full_message
+        stored_answer = full_trace
+        solution_for_ui = clean_stored_answer(last_full_message) or last_full_message
+        yield f"data: {json.dumps({'type': 'solution', 'content': solution_for_ui}, ensure_ascii=False)}\n\n"
+
+        display_message = prompt
+        if file_refs:
+            display_message += f"\n\n📎 引用: {', '.join(file_refs)}"
+
+        stored_messages = store.get_conversation(conv_id).get("messages", [])
+        stored_messages.append(
+            {
+                "role": "user",
+                "content": display_message,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        stored_messages.append(
+            {
+                "role": "assistant",
+                "content": stored_answer,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        store.save_messages(conv_id, stored_messages)
+
+        has_executions = any(s.get("type") == "observation" for s in raw_session_log)
+        session.last_session_log = {
+            "log": raw_session_log,
+            "user_message": prompt,
+        }
+
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        asyncio.ensure_future(_flush_usage_only(session))
+        if has_executions:
+            asyncio.ensure_future(_extract_memories(session))
+            if AUTO_MAINTAIN:
+                asyncio.ensure_future(_auto_maintain(session))
+
+    except Exception as e:
+        logger.exception("Chat stream error")
+        yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+
+
 @router.post("/chat")
 async def chat(
     request: ChatRequest,
@@ -114,119 +233,124 @@ async def chat(
 
     Each conversation uses an independent kernel and lock, so multiple
     users can chat concurrently without sharing REPL state.
-
-    Event types sent to the frontend:
-        conversation_id  — conversation UUID (first event)
-        token            — one LLM token/chunk as it arrives
-        message_end      — full message complete (may contain <execute>)
-        observation      — code execution output
-        solution         — final cleaned answer (persisted to history)
-        done             — stream complete
-        error            — exception message
     """
     conv_id = request.conversation_id
     if not conv_id:
         meta = store.create_conversation()
         conv_id = meta["id"]
 
-    # Get the per-session agent + lock.
     session = session_mgr.get_session(conv_id)
-    session_agent = session.agent
+    conv = store.get_conversation(conv_id)
+    history = []
+    if conv and conv.get("messages"):
+        for m in conv["messages"]:
+            if m.get("role") in ("user", "assistant"):
+                history.append({"role": m["role"], "content": m["content"]})
 
     async def event_stream():
         async with session.lock:
-            raw_session_log: list[dict] = []
-
-            try:
-                yield f"data: {json.dumps({'type': 'conversation_id', 'content': conv_id})}\n\n"
-
-                conv = store.get_conversation(conv_id)
-                history = []
-                if conv and conv.get("messages"):
-                    for m in conv["messages"]:
-                        if m.get("role") in ("user", "assistant"):
-                            history.append({"role": m["role"], "content": m["content"]})
-
-                agent_prompt = build_prompt(request.message, request.file_refs, workspace_dir)
-
-                # Update memory context so MemorySection retrieves relevant memories
-                if hasattr(session_agent, "update_memory_context"):
-                    session_agent.update_memory_context(request.message)
-
-                last_full_message = ""
-
-                cancel_ev = asyncio.Event()
-                cancel_events[conv_id] = cancel_ev
-
-                full_trace_parts: list[str] = []
-
-                try:
-                    async for step in async_iter_agent(session_agent, agent_prompt, history, cancel_ev):
-                        ev_type = step.get("type")
-                        ev_content = step.get("content", "")
-
-                        if ev_type == "token":
-                            yield f"data: {json.dumps({'type': 'token', 'content': ev_content}, ensure_ascii=False)}\n\n"
-                        elif ev_type == "message_end":
-                            last_full_message = ev_content
-                            full_trace_parts.append(ev_content)
-                            raw_session_log.append({"type": "message_end", "content": ev_content})
-                            yield f"data: {json.dumps({'type': 'message_end', 'content': ev_content}, ensure_ascii=False)}\n\n"
-                        elif ev_type == "observation":
-                            full_trace_parts.append(ev_content)
-                            raw_session_log.append({"type": "observation", "content": ev_content})
-                            yield f"data: {json.dumps({'type': 'observation', 'content': ev_content}, ensure_ascii=False)}\n\n"
-                finally:
-                    cancel_events.pop(conv_id, None)
-
-                full_trace = "\n".join(full_trace_parts).strip() or last_full_message
-                stored_answer = full_trace
-                solution_for_ui = clean_stored_answer(last_full_message) or last_full_message
-                yield f"data: {json.dumps({'type': 'solution', 'content': solution_for_ui}, ensure_ascii=False)}\n\n"
-
-                display_message = request.message
-                if request.file_refs:
-                    display_message += f"\n\n📎 引用: {', '.join(request.file_refs)}"
-
-                stored_messages = conv.get("messages", []) if conv else []
-                stored_messages.append(
-                    {
-                        "role": "user",
-                        "content": display_message,
-                        "timestamp": datetime.now().isoformat(),
-                    }
-                )
-                stored_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": stored_answer,
-                        "timestamp": datetime.now().isoformat(),
-                    }
-                )
-                store.save_messages(conv_id, stored_messages)
-
-                has_executions = any(s.get("type") == "observation" for s in raw_session_log)
-                if has_executions:
-                    yield f"data: {json.dumps({'type': 'maintenance_pending'})}\n\n"
-                    # Cache session log on the session for utilities router.
-                    session.last_session_log = {
-                        "log": raw_session_log,
-                        "user_message": request.message,
-                    }
-
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-                # Fire-and-forget: flush utility usage from this session's kernel.
-                asyncio.ensure_future(_flush_usage_only(session))
-                # Fire-and-forget: extract memories from this session.
-                if has_executions:
-                    asyncio.ensure_future(_extract_memories(session))
-
-            except Exception as e:
-                logger.exception("Chat stream error")
-                yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+            async for chunk in _chat_event_stream(
+                session, conv_id, request.message, request.file_refs,
+                history, workspace_dir, cancel_events, store,
+            ):
+                yield chunk
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+class RegenerateRequest(BaseModel):
+    conversation_id: str
+
+
+def _parse_user_message(content: str) -> tuple[str, list[str]]:
+    """Restore raw prompt and file_refs from a stored user message.
+
+    Stored format:  prompt + '\n\n📎 引用: file1, file2'
+    """
+    marker = "\n\n📎 引用: "
+    idx = content.rfind(marker)
+    if idx == -1:
+        return content, []
+    return content[:idx], content[idx + len(marker):].split(", ")
+
+
+@router.post("/chat/regenerate")
+async def regenerate(
+    request: RegenerateRequest,
+    store: ConversationStore = Depends(get_store),
+    workspace_dir: str = Depends(get_workspace_dir),
+    cancel_events: dict = Depends(get_cancel_events),
+    session_mgr: SessionManager = Depends(get_session_manager),
+):
+    """Regenerate the last assistant message.
+
+    Deletes the last assistant turn (and anything after it), then re-runs
+    the agent with the same user prompt and truncated history.
+    """
+    conv_id = request.conversation_id
+    conv = store.get_conversation(conv_id)
+    if not conv:
+        return StreamingResponse(
+            _error_stream("Conversation not found"), media_type="text/event-stream"
+        )
+
+    messages = conv.get("messages", [])
+    if not messages:
+        return StreamingResponse(
+            _error_stream("No messages in conversation"), media_type="text/event-stream"
+        )
+
+    # Find last assistant index
+    last_assistant_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "assistant":
+            last_assistant_idx = i
+            break
+
+    if last_assistant_idx is None:
+        return StreamingResponse(
+            _error_stream("No assistant message to regenerate"), media_type="text/event-stream"
+        )
+
+    # Truncate: keep only messages before the last assistant
+    truncated = messages[:last_assistant_idx]
+    store.save_messages(conv_id, truncated)
+
+    # Find the user message that triggered the deleted assistant turn
+    user_msg = None
+    for i in range(len(truncated) - 1, -1, -1):
+        if truncated[i].get("role") == "user":
+            user_msg = truncated[i]
+            break
+
+    if user_msg is None:
+        return StreamingResponse(
+            _error_stream("No user message found before assistant"), media_type="text/event-stream"
+        )
+
+    prompt, file_refs = _parse_user_message(user_msg.get("content", ""))
+
+    # Build history (excluding the last user message — it's the new prompt)
+    history = []
+    for m in truncated[:-1]:
+        if m.get("role") in ("user", "assistant"):
+            history.append({"role": m["role"], "content": m["content"]})
+
+    session = session_mgr.get_session(conv_id)
+
+    async def event_stream():
+        async with session.lock:
+            async for chunk in _chat_event_stream(
+                session, conv_id, prompt, file_refs,
+                history, workspace_dir, cancel_events, store,
+            ):
+                yield chunk
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+async def _error_stream(msg: str):
+    yield f"data: {json.dumps({'type': 'error', 'content': msg})}\n\n"
 
 
 @router.post("/chat/cancel")

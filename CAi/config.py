@@ -115,3 +115,10 @@ CURATOR_TEMPERATURE = float(os.getenv("CURATOR_TEMPERATURE", "0.2"))
 MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "true").lower() in ("true", "1", "yes")
 MEMORY_DIR = WORKSPACE_DIR / "agent_workspace" / "_memory"
 MEMORY_MAX_ENTRIES = int(os.getenv("MEMORY_MAX_ENTRIES", "100"))
+
+# =============================================================================
+# Utility maintenance
+# =============================================================================
+# When True, utility library maintenance runs automatically after each
+# code-executing session without prompting the user.
+AUTO_MAINTAIN = os.getenv("AUTO_MAINTAIN", "true").lower() in ("true", "1", "yes")

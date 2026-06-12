@@ -89,12 +89,12 @@ export function handleChatFileAttach(e) {
     const files = Array.from(e.target.files);
     if (!files.length) return;
 
+    state.attachedFiles.push(...files);
+    renderAttachedFiles();
+    updateSendBtnState();
+
     if (state.workspaceFiles.length > 0) {
-        showFilePickerModal(files);
-    } else {
-        state.attachedFiles.push(...files);
-        renderAttachedFiles();
-        updateSendBtnState();
+        showFilePickerModal();
     }
     e.target.value = "";
 }
@@ -238,12 +238,8 @@ function showPreviewModal(filename, bodyHtml) {
     modal.querySelector(".modal-close-btn").addEventListener("click", closeAllModals);
 }
 
-function showFilePickerModal(newFiles) {
+function showFilePickerModal() {
     closeAllModals();
-
-    state.attachedFiles.push(...newFiles);
-    renderAttachedFiles();
-    updateSendBtnState();
 
     if (state.workspaceFiles.length === 0) return;
 
@@ -262,6 +258,8 @@ function showFilePickerModal(newFiles) {
         `;
     }).join("");
 
+    const attachedCount = state.attachedFiles.length;
+
     modal.innerHTML = `
         <div class="modal-container modal-sm">
             <div class="modal-header">
@@ -269,7 +267,7 @@ function showFilePickerModal(newFiles) {
                 <button class="btn-icon modal-close-btn">✕</button>
             </div>
             <div class="picker-body">
-                <p class="picker-hint">已上传 ${newFiles.length} 个新文件。还可以选择工作区已有文件作为引用：</p>
+                <p class="picker-hint">已选择 ${attachedCount} 个新文件。还可以选择工作区已有文件作为引用：</p>
                 <div class="picker-list">${fileItems}</div>
             </div>
             <div class="modal-footer">
