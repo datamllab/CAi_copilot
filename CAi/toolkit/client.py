@@ -33,6 +33,12 @@ _INITIAL_POLL_INTERVAL = 0.5
 _MAX_POLL_INTERVAL = 10.0
 _POLL_BACKOFF = 1.5
 
+# Submission tuning — conda env startup + model loading can be slow
+_SUBMIT_TIMEOUT = 120  # seconds for the HTTP POST (not the overall job timeout)
+_SUBMIT_MAX_RETRIES = 3
+_SUBMIT_RETRY_BASE_DELAY = 2.0  # seconds, doubles each retry
+_POLL_TIMEOUT = 10  # seconds per polling GET (just a status check)
+
 
 class ToolServerError(RuntimeError):
     """Raised when the tool server is unreachable or returns an unexpected shape."""
@@ -69,17 +75,27 @@ def run_tool(
     submit_url = f"{_BASE_URL}/run/{tool}/{action}"
     job_url = f"{_BASE_URL}/job"
 
-    # 1. Submit
-    try:
-        r = requests.post(submit_url, json=payload, timeout=10, proxies=_NO_PROXY)
-        r.raise_for_status()
-        data = r.json()
-    except requests.exceptions.HTTPError as e:
-        return {
-            "error": f"HTTP {e.response.status_code} from tool server: {e.response.text}"
-        }
-    except requests.RequestException as e:
-        return {"error": f"Cannot reach tool server at {_BASE_URL}: {e}"}
+    # 1. Submit (with retries — conda startup + model loading can exceed short timeouts)
+    last_err: Exception | None = None
+    for attempt in range(_SUBMIT_MAX_RETRIES):
+        try:
+            r = requests.post(
+                submit_url, json=payload, timeout=_SUBMIT_TIMEOUT, proxies=_NO_PROXY
+            )
+            r.raise_for_status()
+            data = r.json()
+            break
+        except requests.exceptions.HTTPError as e:
+            return {
+                "error": f"HTTP {e.response.status_code} from tool server: {e.response.text}"
+            }
+        except requests.RequestException as e:
+            last_err = e
+            if attempt < _SUBMIT_MAX_RETRIES - 1:
+                delay = _SUBMIT_RETRY_BASE_DELAY * (2 ** attempt)
+                time.sleep(delay)
+                continue
+            return {"error": f"Cannot reach tool server at {_BASE_URL} after {_SUBMIT_MAX_RETRIES} attempts: {last_err}"}
 
     if "error" in data:
         return {"error": f"Task submission rejected: {data['error']}"}
@@ -94,7 +110,7 @@ def run_tool(
         if time.time() > deadline:
             return {"error": f"Timeout: task did not finish within {timeout_mins} minutes."}
         try:
-            r = requests.get(f"{job_url}/{job_id}", timeout=10, proxies=_NO_PROXY)
+            r = requests.get(f"{job_url}/{job_id}", timeout=_POLL_TIMEOUT, proxies=_NO_PROXY)
             status = r.json()
         except requests.RequestException as e:
             return {"error": f"Polling failed: {e}"}

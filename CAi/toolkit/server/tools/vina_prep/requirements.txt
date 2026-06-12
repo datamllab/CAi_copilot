@@ -1,0 +1,4 @@
+rdkit
+meeko
+vina
+openbabel

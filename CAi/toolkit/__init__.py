@@ -20,7 +20,9 @@ How to add a new tool:
 
 from .functions import (
     analyze_abfe_results,
+    analyze_receptor_pdb_for_vina,
     calculate_scscore,
+    convert_receptor_pdb_to_pdbqt_for_vina,
     deepchem_molgan_generate,
     deepchem_molgan_train,
     deepchem_seq2seq_evaluate,
@@ -40,6 +42,7 @@ from .functions import (
     predict_antibacterial_pmic,
     predict_molecule_toxicity,
     prepare_abfe_fep,
+    prepare_receptor_pdb_for_vina,
     run_abfe_fep,
     run_abfe_legs,
     run_gromacs_md,
@@ -49,11 +52,14 @@ from .skill_helpers import get_skill_content, list_available_skills
 __all__ = [
     # evaluation
     "analyze_abfe_results",
+    "analyze_receptor_pdb_for_vina",
     "calculate_scscore",
+    "convert_receptor_pdb_to_pdbqt_for_vina",
     "perform_molecular_docking_vina",
     "predict_antibacterial_pmic",
     "predict_molecule_toxicity",
     "prepare_abfe_fep",
+    "prepare_receptor_pdb_for_vina",
     "run_abfe_fep",
     "run_abfe_legs",
     # generation

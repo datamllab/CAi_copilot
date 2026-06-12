@@ -16,6 +16,16 @@ from collections.abc import Callable
 from typing import Any
 
 
+def _shutdown_kernel() -> None:
+    """Shut down the default REPL kernel session in this worker process."""
+    try:
+        from CAi.CAi_agent.execution.repl import _default_session
+
+        _default_session.shutdown()
+    except Exception:
+        pass
+
+
 def run_single_experiment(
     item_dict: dict,
     agent_args: dict,
@@ -118,5 +128,7 @@ def run_single_experiment(
     finally:
         signal.alarm(0)  # Cancel any pending alarm
         signal.signal(signal.SIGALRM, old_handler)
+        # Explicitly shut down the kernel subprocess to avoid orphan processes
+        _shutdown_kernel()
 
     return result

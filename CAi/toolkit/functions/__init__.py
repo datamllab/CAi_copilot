@@ -10,11 +10,14 @@ the REPL can dump the result cleanly.
 
 from .evaluation import (
     analyze_abfe_results,
+    analyze_receptor_pdb_for_vina,
     calculate_scscore,
+    convert_receptor_pdb_to_pdbqt_for_vina,
     perform_molecular_docking_vina,
     predict_antibacterial_pmic,
     predict_molecule_toxicity,
     prepare_abfe_fep,
+    prepare_receptor_pdb_for_vina,
     run_abfe_fep,
     run_abfe_legs,
 )
@@ -40,11 +43,14 @@ from .generation import (
 __all__ = [
     # evaluation
     "analyze_abfe_results",
+    "analyze_receptor_pdb_for_vina",
     "calculate_scscore",
+    "convert_receptor_pdb_to_pdbqt_for_vina",
     "perform_molecular_docking_vina",
     "predict_antibacterial_pmic",
     "predict_molecule_toxicity",
     "prepare_abfe_fep",
+    "prepare_receptor_pdb_for_vina",
     "run_abfe_fep",
     "run_abfe_legs",
     # generation

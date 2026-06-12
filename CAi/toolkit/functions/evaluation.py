@@ -237,6 +237,192 @@ def perform_molecular_docking_vina(
     }
 
 
+def analyze_receptor_pdb_for_vina(
+    receptor_pdb_path: str,
+    ligand_contact_cutoff: float = 6.0,
+) -> dict:
+    """Analyze a receptor PDB structure before AutoDock Vina preparation.
+
+    Identifies chains, small-molecule ligands, metals, and water molecules.
+    Use this to inspect a PDB before cleaning, or to determine which chains
+    are near the binding site.
+
+    Args:
+        receptor_pdb_path:     Path to the receptor PDB file (must exist on server).
+        ligand_contact_cutoff: Distance cutoff in Angstrom for detecting
+                               ligand-contacting chains. Default 6.0.
+
+    Returns:
+        On success:
+          {
+            "success": True,
+            "analysis": {
+              "input_pdb": str,
+              "structure_kind": str,
+              "has_small_molecule": bool,
+              "small_molecule_resnames": [str, ...],
+              "metal_resnames": [str, ...],
+              "protein_chains": [str, ...],
+              "protein_chain_atom_counts": [[str, int], ...],
+              "ligand_contact_chains": [str, ...],
+              "recommended_chains": [str, ...],
+              "nonstandard_protein_residues": [str, ...],
+              "water_atom_count": int,
+            },
+          }
+        On error:
+          {"success": False, "error": str}
+    """
+    if err := valid_existing_file(receptor_pdb_path, field_name="receptor_pdb_path"):
+        return {"success": False, "error": err}
+
+    payload = {
+        "receptor_pdb_path": receptor_pdb_path,
+        "ligand_contact_cutoff": ligand_contact_cutoff,
+    }
+    return run_tool("vina_prep", payload, action="analyze", timeout_mins=5)
+
+
+def prepare_receptor_pdb_for_vina(
+    receptor_pdb_path: str,
+    output_clean_pdb_path: str | None = None,
+    output_dir: str | None = None,
+    output_prefix: str | None = None,
+    chains: str | list[str] | None = None,
+    chain_policy: str = "auto",
+    ligand_contact_cutoff: float = 6.0,
+    keep_resname: str | list[str] | None = None,
+    remove_resname: str | list[str] | None = None,
+    keep_water_residue: str | list[str] | None = None,
+    keep_all_waters: bool = False,
+    keep_all_hetero: bool = False,
+    auto_strategy: bool = True,
+    ph: str = "7.4",
+) -> dict:
+    """Clean a receptor PDB before AutoDock Vina PDBQT conversion.
+
+    Removes unwanted chains, water molecules, and hetero atoms based on an
+    automatic or user-specified strategy. Produces a cleaned PDB and a
+    human-readable cleaning report.
+
+    Typical workflow: raw PDB → this function → cleaned PDB → convert to PDBQT.
+
+    Args:
+        receptor_pdb_path:     Path to the raw receptor PDB file.
+        output_clean_pdb_path: Path for the cleaned output PDB. If None,
+                               auto-generated in output_dir.
+        output_dir:            Output directory. Default is the job sandbox.
+        output_prefix:         Prefix for output file names.
+        chains:                Specific chain ID(s) to keep. None = auto.
+        chain_policy:          Chain selection policy: 'auto', 'all', 'largest',
+                               or 'ligand-contact'. Default 'auto'.
+        ligand_contact_cutoff: Distance (Angstrom) for ligand-contact policy.
+        keep_resname:          Residue name(s) to always keep.
+        remove_resname:        Residue name(s) to always remove.
+        keep_water_residue:    Water residue name(s) to keep.
+        keep_all_waters:       Keep all water molecules. Default False.
+        keep_all_hetero:       Keep all hetero atoms. Default False.
+        auto_strategy:         Let the tool choose a sensible cleaning strategy.
+        ph:                    pH for protonation state assignment. Default '7.4'.
+
+    Returns:
+        On success:
+          {
+            "success": True,
+            "input_receptor_pdb_path": str,
+            "cleaned_receptor_pdb_path": str,
+            "report_path": str,
+            "analysis": {...},
+            "strategy": {...},
+            "cleaning": {...},
+          }
+        On error:
+          {
+            "success": False,
+            "input_receptor_pdb_path": str,
+            "error": str,
+          }
+    """
+    if err := valid_existing_file(receptor_pdb_path, field_name="receptor_pdb_path"):
+        return {"success": False, "error": err}
+
+    payload: dict = {
+        "receptor_pdb_path": receptor_pdb_path,
+        "chain_policy": chain_policy,
+        "ligand_contact_cutoff": ligand_contact_cutoff,
+        "keep_all_waters": keep_all_waters,
+        "keep_all_hetero": keep_all_hetero,
+        "auto_strategy": auto_strategy,
+        "ph": ph,
+    }
+    if output_clean_pdb_path:
+        payload["output_clean_pdb_path"] = output_clean_pdb_path
+    if output_dir:
+        payload["output_dir"] = output_dir
+    if output_prefix:
+        payload["output_prefix"] = output_prefix
+    if chains is not None:
+        payload["chains"] = chains
+    if keep_resname is not None:
+        payload["keep_resname"] = keep_resname
+    if remove_resname is not None:
+        payload["remove_resname"] = remove_resname
+    if keep_water_residue is not None:
+        payload["keep_water_residue"] = keep_water_residue
+
+    return run_tool("vina_prep", payload, action="prepare", timeout_mins=10)
+
+
+def convert_receptor_pdb_to_pdbqt_for_vina(
+    receptor_pdb_path: str,
+    output_pdbqt_path: str | None = None,
+    allow_bad_res: bool = False,
+    overwrite: bool = True,
+) -> dict:
+    """Convert a (cleaned) receptor PDB into AutoDock Vina PDBQT format.
+
+    Uses Meeko to add hydrogens, assign charges, and produce a PDBQT file
+    suitable for AutoDock Vina docking.
+
+    This should be called AFTER prepare_receptor_pdb_for_vina() on a cleaned PDB.
+
+    Args:
+        receptor_pdb_path: Path to the (cleaned) receptor PDB file.
+        output_pdbqt_path: Path for the output PDBQT. If None, auto-generated
+                           in the job sandbox.
+        allow_bad_res:     Allow problematic residues. Default False.
+        overwrite:         Overwrite existing output file. Default True.
+
+    Returns:
+        On success:
+          {
+            "success": True,
+            "input_receptor_pdb_path": str,
+            "receptor_pdbqt_path": str,
+            "allow_bad_res": bool,
+            "overwrite": bool,
+          }
+        On error:
+          {
+            "success": False,
+            "input_receptor_pdb_path": str,
+            "error": str,
+          }
+    """
+    if err := valid_existing_file(receptor_pdb_path, field_name="receptor_pdb_path"):
+        return {"success": False, "error": err}
+
+    payload: dict = {
+        "receptor_pdb_path": receptor_pdb_path,
+        "allow_bad_res": allow_bad_res,
+        "overwrite": overwrite,
+    }
+    if output_pdbqt_path:
+        payload["output_pdbqt_path"] = output_pdbqt_path
+
+    return run_tool("vina_prep", payload, action="convert", timeout_mins=10)
+
+
 def run_abfe_fep(
     smiles: str,
     protein: str,

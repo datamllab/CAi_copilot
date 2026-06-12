@@ -133,52 +133,55 @@ def run_experiment(
             initializer=_worker_init,
             initargs=(proxy_env,),
         )
-        async_results: list[mp.pool.AsyncResult] = []
+        try:
+            async_results: list[mp.pool.AsyncResult] = []
 
-        for item in dataset:
-            if on_item_start:
-                on_item_start(completed, total, item)
-            item_d = _item_to_dict(item)
-            ar = pool.apply_async(
-                run_single_experiment,
-                args=(item_d, agent_kwargs, per_item_timeout_seconds),
-            )
-            async_results.append(ar)
+            for item in dataset:
+                if on_item_start:
+                    on_item_start(completed, total, item)
+                item_d = _item_to_dict(item)
+                ar = pool.apply_async(
+                    run_single_experiment,
+                    args=(item_d, agent_kwargs, per_item_timeout_seconds),
+                )
+                async_results.append(ar)
 
-        pool.close()
+            pool.close()
 
-        for ar in async_results:
-            try:
-                raw = ar.get(timeout=per_item_timeout_seconds + 30)
-            except Exception as e:
-                # Pool-level error (e.g., worker crash) — surface as error result
-                raw = {
-                    "item_id": None,
-                    "prompt": "",
-                    "final_response": "",
-                    "status": "error",
-                    "error_message": f"Worker process error: {e}",
-                    "wall_time_seconds": 0.0,
-                    "steps": [],
-                    "code_executions": 0,
-                    "item_metadata": {},
-                    "expected_output": None,
-                    "match_score": None,
-                }
+            for ar in async_results:
+                try:
+                    raw = ar.get(timeout=per_item_timeout_seconds + 30)
+                except Exception as e:
+                    # Pool-level error (e.g., worker crash) — surface as error result
+                    raw = {
+                        "item_id": None,
+                        "prompt": "",
+                        "final_response": "",
+                        "status": "error",
+                        "error_message": f"Worker process error: {e}",
+                        "wall_time_seconds": 0.0,
+                        "steps": [],
+                        "code_executions": 0,
+                        "item_metadata": {},
+                        "expected_output": None,
+                        "match_score": None,
+                    }
 
-            result = _dict_to_result(raw)
-            if scorer:
-                result.match_score = scorer(result)
-            results.append(result)
+                result = _dict_to_result(raw)
+                if scorer:
+                    result.match_score = scorer(result)
+                results.append(result)
 
-            if checkpoint_writer:
-                checkpoint_writer.append(result)
+                if checkpoint_writer:
+                    checkpoint_writer.append(result)
 
-            completed += 1
-            if on_progress:
-                on_progress(completed, total, result)
-
-        pool.join()
+                completed += 1
+                if on_progress:
+                    on_progress(completed, total, result)
+        finally:
+            # Ensure all worker processes are cleaned up, even on error
+            pool.terminate()
+            pool.join()
 
     # Sort results by item_id (None sorts last)
     results.sort(key=lambda r: r.item_id or "\xff\xff")

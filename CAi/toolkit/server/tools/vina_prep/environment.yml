@@ -1,0 +1,10 @@
+name: vina-prep
+channels:
+  - conda-forge
+dependencies:
+  - python
+  - rdkit
+  - meeko
+  - vina
+  - openbabel
+  - pip

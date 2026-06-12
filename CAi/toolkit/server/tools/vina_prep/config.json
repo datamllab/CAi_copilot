@@ -1,0 +1,12 @@
+{
+	"name": "vina_prep",
+	"conda_env": "vina-prep",
+	"gpu": false,
+	"actions": {
+		"default": "run.py",
+		"analyze": "analyze.py",
+		"prepare": "run.py",
+		"batch_prepare": "batch_prepare.py",
+		"convert": "convert.py"
+	}
+}
