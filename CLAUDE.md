@@ -20,11 +20,16 @@ ruff check .
 # Start tool backend (from repo root)
 python -m CAi.toolkit.server.app
 
-# Launch agent Web UI
-python CAi/main.py --port 7000
+# Launch agent Web UI (default port from config, override with --port)
+python -m CAi.main
+python -m CAi.main --port 9000
 
 # Launch agent CLI REPL
-python CAi/main.py --cli
+python -m CAi.main --cli
+python -m CAi.main --cli --resume abc123
+
+# Override LLM config via CLI flags
+python -m CAi.main --model claude-sonnet-4-5-20250929 --temperature 0.5
 ```
 
 ## Architecture
@@ -33,7 +38,8 @@ Two-layer agent design. `BaseAgent` is the execution engine (LangGraph loop + LL
 
 ```
 BaseAgent  (core: generate→execute→generate loop + LLM + REPL)
-    ├── context_compression.py  (hybrid partition for long conversations)
+    ├── compression/          (ContextCompressor: hybrid partition + plan preservation)
+    ├── context_compression.py  (backward-compat shim, re-exports from compression/)
     └── A1pro  (orchestrator: tools + skills + prompt sections)
               ├── memory/       (MemoryStore + MemoryManager — cross-session persistent memory)
               ├── cli/         (terminal REPL: theme, display, streaming, commands)
@@ -47,7 +53,7 @@ The agent can mix text and code in a single response. Code goes in `<execute>...
 ### Key subsystems
 
 - **`CAi/CAi_agent/llm.py`** — LLM factory supporting Anthropic, OpenAI, DeepSeek, and Custom (any OpenAI-compatible endpoint). Auto-detects provider from model name prefix. Special handling for gpt-5/o1/o3 (Responses API, no `stop`/`temperature`).
-- **`CAi/CAi_agent/context_compression.py`** — Hybrid partition strategy for long conversations. Three-zone model: recent verbatim, middle high-score selective, oldest dropped with summary notice. Zero extra LLM calls.
+- **`CAi/CAi_agent/compression/`** — Context compression subsystem. `ContextCompressor` orchestrator delegates to `hybrid_compress` (three-zone model: recent verbatim, middle high-score selective, oldest dropped with summary notice) and preserves `<execute lang="plan">` blocks across compression. Zero extra LLM calls. `context_compression.py` is a backward-compat shim.
 - **`CAi/CAi_agent/memory/`** — Cross-session persistent memory. `MemoryStore` (JSON-backed, keyword+tag search, Jaccard dedup, importance eviction). `MemoryManager` (curator LLM auto-extracts preferences/project context/domain facts from session logs). `MemorySection` (PromptSection injecting relevant memories into agent prompt).
 - **`CAi/CAi_agent/execution/repl.py`** — Python execution via a Jupyter IPython kernel subprocess (not exec()). True process isolation, SIGINT/SIGKILL timeout enforcement, cloudpickle-based tool injection, matplotlib figure auto-capture.
 - **`CAi/CAi_agent/prompt/`** — Composition-based prompt building. Each section is a `PromptSection` subclass. `PromptBuilder.add()` assembles them; empty sections are silently dropped. `ToolsSection` reads from `ToolRegistry` (hides `hidden` tools). `SkillsSection` reads from `SkillLoader`.
@@ -58,11 +64,23 @@ The agent can mix text and code in a single response. Code goes in `<execute>...
 
 ### Web UI
 
-Static HTML/JS/CSS frontend served alongside a FastAPI backend. SSE streaming (`POST /api/chat`), conversation persistence as JSON files (`ConversationStore`), cancel support via `asyncio.Event`. Chat requests are serialized via `asyncio.Lock` because the REPL kernel is shared. See `docs/web_ui_backend.md` for rationale.
+Static HTML/JS/CSS frontend served alongside a FastAPI backend. SSE streaming (`POST /api/chat`), conversation persistence as JSON files (`ConversationStore`), cancel support via `asyncio.Event`. **Each conversation gets an independent Jupyter kernel and `asyncio.Lock`** — multiple users can chat concurrently without sharing REPL state. See `docs/web_ui_backend.md` for rationale.
+
+Key frontend capabilities:
+- **Regenerate** (`🔄`) — re-run the last assistant message with the same prompt and truncated history.
+- **Continue generation** (`⏵`) — appears after an interrupted stream; reuses regenerate to finish the response.
+- **Draft autosave** — input text is saved to `localStorage` per conversation and restored on page reload / session switch.
+- **DOMPurify** — rendered markdown is sanitized before injection to prevent XSS.
+- **Auto maintenance** — utility library maintenance runs silently in the background after code-executing sessions (no intrusive popup).
 
 ### Configuration
 
 All config in `CAi/config.py`, loaded from `CAi/.env`. `LLM_MODEL` determines the provider; override with `LLM_SOURCE`. CLI flags (`--port`, `--model`, `--source`, `--base-url`, `--api-key`, `--temperature`) override env vars.
+
+Notable toggles:
+- `AUTO_MAINTAIN` (default `true`) — utility library maintenance runs automatically after code-executing sessions without prompting the user.
+- `MEMORY_ENABLED` / `MEMORY_MAX_ENTRIES` — cross-session persistent memory subsystem.
+- `LLM_REQUEST_TIMEOUT` — HTTP timeout for LLM API calls (0 = use SDK default).
 
 ### Testing
 
