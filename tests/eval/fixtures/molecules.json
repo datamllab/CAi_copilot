@@ -1,0 +1,90 @@
+{
+  "comment": "Test molecule set for CAi evaluation. All SMILES are valid and parseable by RDKit.",
+  "scaffolds": [
+    {
+      "id": "scaffold_benzene_mono",
+      "smiles": "c1cc(*)ccc1",
+      "description": "Benzene with single attachment point",
+      "attachment_points": 1
+    },
+    {
+      "id": "scaffold_benzene_di",
+      "smiles": "c1cc(*)cc([*:1])c1",
+      "description": "Benzene with two attachment points",
+      "attachment_points": 2
+    },
+    {
+      "id": "scaffold_penicillin",
+      "smiles": "CC1(C)S[C@@H]2(NC(=O)*)C(=O)N2[C@H]1C(=O)O",
+      "description": "Penicillin core scaffold (chiral, with attachment point)",
+      "attachment_points": 1,
+      "is_chiral": true
+    },
+    {
+      "id": "scaffold_phenethyl",
+      "smiles": "c1cc(CCO)cc(*)c1",
+      "description": "Phenethyl-substituted benzene scaffold",
+      "attachment_points": 1
+    }
+  ],
+  "complete_molecules": [
+    {
+      "id": "aspirin",
+      "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+      "name": "Aspirin",
+      "mw": 180.16
+    },
+    {
+      "id": "acetaminophen",
+      "smiles": "CC(=O)Nc1ccc(O)cc1",
+      "name": "Acetaminophen",
+      "mw": 151.16
+    },
+    {
+      "id": "ibuprofen",
+      "smiles": "CC(C)Cc1ccc(C(C)C(=O)O)cc1",
+      "name": "Ibuprofen",
+      "mw": 206.28
+    },
+    {
+      "id": "chlorobenzene",
+      "smiles": "Clc1ccccc1",
+      "name": "Chlorobenzene",
+      "mw": 112.56
+    },
+    {
+      "id": "ethanol",
+      "smiles": "CCO",
+      "name": "Ethanol",
+      "mw": 46.07
+    },
+    {
+      "id": "benzamide",
+      "smiles": "NC(=O)c1ccccc1",
+      "name": "Benzamide",
+      "mw": 121.14
+    }
+  ],
+  "invalid_inputs": [
+    {
+      "id": "invalid_smiles_unclosed",
+      "smiles": "CC(",
+      "description": "Unclosed ring / parenthesis"
+    },
+    {
+      "id": "invalid_smiles_empty",
+      "smiles": "",
+      "description": "Empty string"
+    },
+    {
+      "id": "no_attachment_point",
+      "smiles": "c1ccccc1",
+      "description": "Valid benzene but no * attachment point (not a scaffold)"
+    },
+    {
+      "id": "scaffold_with_wildcard_for_mol2mol",
+      "smiles": "c1cc(*)ccc1",
+      "description": "Has wildcard — invalid for mol2mol (complete molecule expected)"
+    }
+  ]
+}

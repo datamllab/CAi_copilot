@@ -130,6 +130,10 @@ export async function sendMessage() {
                 conversation_id: state.currentConvId,
             }),
         });
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`HTTP ${response.status}: ${errText || response.statusText}`);
+        }
 
         ({ fullContent, currentTurnText } = await _consumeStream(
             response, aiMsgEl, (event) => {
@@ -258,6 +262,10 @@ export async function regenerateMessage(msgEl) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ conversation_id: state.currentConvId }),
         });
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`HTTP ${response.status}: ${errText || response.statusText}`);
+        }
 
         ({ fullContent, currentTurnText } = await _consumeStream(response, aiMsgEl));
     } catch (e) {

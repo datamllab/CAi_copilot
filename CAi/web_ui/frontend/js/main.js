@@ -87,12 +87,19 @@ function setupEventListeners() {
             closeAllModals();
         }
     });
+    // Close sidebar on overlay click (mobile)
+    const sidebarOverlay = document.getElementById("sidebarOverlay");
+    if (sidebarOverlay) {
+        sidebarOverlay.addEventListener("click", closeSidebar);
+    }
+
     document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
             if (dom.sendBtn.classList.contains("btn-stop")) {
                 cancelGeneration();
             } else {
                 closeAllModals();
+                closeSidebar();
             }
         }
     });
@@ -100,11 +107,31 @@ function setupEventListeners() {
 
 // ========== Sidebar ==========
 function toggleSidebar() {
-    $("#sidebar").classList.toggle("open");
+    const sidebar = $("#sidebar");
+    sidebar.classList.toggle("open");
+    updateSidebarOverlay();
+}
+
+function closeSidebar() {
+    const sidebar = $("#sidebar");
+    sidebar.classList.remove("open");
+    updateSidebarOverlay();
+}
+
+function updateSidebarOverlay() {
+    const overlay = document.getElementById("sidebarOverlay");
+    if (!overlay) return;
+    const isOpen = $("#sidebar").classList.contains("open");
+    overlay.classList.toggle("visible", isOpen);
 }
 
 function collapseSidebar() {
     const sidebar = $("#sidebar");
+    // On mobile, the collapse button acts as a close button
+    if (window.innerWidth <= 768) {
+        closeSidebar();
+        return;
+    }
     sidebar.classList.toggle("collapsed");
     localStorage.setItem("cai-sidebar-collapsed", sidebar.classList.contains("collapsed"));
 }

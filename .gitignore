@@ -1,8 +1,8 @@
-.gitignore
 .buildplan
 .env
 debug*
 .*
+!.gitignore
 # Byte-compiled / optimized / DLL files
 CAi_release/CAi_env/CAi_tools/
 open_source_process.ipynb
@@ -133,7 +133,10 @@ target/
 profile_default/
 ipython_config.py
 
-tests/
+tests/logs/
+tests/**/__pycache__/
+tests/.pytest_cache/
+.ruff_cache/
 CAi/.env
 agent_workspace/*
 experiments/*
