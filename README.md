@@ -1,6 +1,6 @@
 ![CAiCopilot](assets/CAiCopilot.png)
 
-# CAi Molecule Design Copilot
+# CAi Copilot for Molecule Design
 
 An agentic platform for molecular generation, evaluation, and candidate prioritization.
 
