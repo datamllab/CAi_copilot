@@ -250,12 +250,13 @@ CAi Molecule Design Copilot 构建了一套统一的分子生成、性质评估�
 ## 引用
 
 ```bibtex
-@misc{cai_molecule_design_copilot_2026,
-  author    = {Datalab},
-  title     = {CAi Molecule Design Copilot},
-  year      = {2026},
-  month     = {May},
-  publisher = {GitHub},
-  note      = {An agentic platform for molecular generation, evaluation, and candidate selection}
+@misc{wang2026caicopilotreducingoperational,
+      title={CAi Copilot: Reducing Operational Workload in Molecular Design through Intent-Driven Agentic Workflows}, 
+      author={Zhu Wang and Jiangyu Chen and Yingjun Shang and Yuhui Yao and Laiao Lu and Tianfan Fu and Na Zou},
+      year={2026},
+      eprint={2608.06961},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2608.06961}, 
 }
 ```
